@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Commute Monitor</title>
+    <style>
+        body {
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+            font-family: 'Courier New', Courier, monospace;
+            margin: 0;
+            padding: 20px;
+        }
+        h1 { text-align: center; color: #ffbf00; letter-spacing: 2px; }
+        .group-header {
+            color: #4da6ff;
+            border-bottom: 2px solid #4da6ff;
+            margin-top: 30px;
+            margin-bottom: 10px;
+            padding-bottom: 5px;
+        }
+        .board-container { display: flex; flex-direction: column; gap: 15px; }
+        .station-card {
+            background: #2b2b2b;
+            padding: 10px;
+            border-radius: 4px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.5);
+        }
+        .station-name {
+            font-weight: bold;
+            color: #ffbf00;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+        }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 4px; }
+        .time { color: #fff; font-weight: bold; width: 60px; }
+        .line { color: #ffbf00; width: 50px; }
+        .dest { color: #ddd; }
+        .status { text-align: right; }
+        .status.late { color: #ff6b6b; }
+        .status.ontime { color: #69f0ae; }
+        
+        #loading { text-align: center; margin-top: 20px; color: #888; }
+    </style>
+</head>
+<body>
+
+    <h1>DEPARTURES</h1>
+    <div id="last-updated" style="text-align: center; font-size: 0.8em; color: #888; margin-bottom: 20px;"></div>
+
+    <div id="board" class="board-container"></div>
+    <div id="loading">Connecting to SL Network...</div>
+
+    <script>
+        async function updateBoard() {
+            try {
+                const response = await fetch('/api/data');
+                const data = await response.json();
+                
+                const board = document.getElementById('board');
+                board.innerHTML = '';
+                document.getElementById('loading').style.display = 'none';
+
+                for (const [group, stations] of Object.entries(data)) {
+                    if (stations.length === 0) continue;
+
+                    const groupHeader = document.createElement('h2');
+                    groupHeader.className = 'group-header';
+                    groupHeader.textContent = group;
+                    board.appendChild(groupHeader);
+
+                    stations.forEach(station => {
+                        const card = document.createElement('div');
+                        card.className = 'station-card';
+                        
+                        let rows = '';
+                        station.departures.forEach(dep => {
+                            const statusClass = dep.status_text === 'On Time' ? 'ontime' : 'late';
+                            rows += `
+                                <tr>
+                                    <td class="line">${dep.line_num}</td>
+                                    <td class="dest">${dep.destination}</td>
+                                    <td class="time">${dep.display_time}</td>
+                                    <td class="status ${statusClass}">${dep.status_text}</td>
+                                </tr>
+                            `;
+                        });
+
+                        card.innerHTML = `
+                            <div class="station-name">${station.station}</div>
+                            <table>${rows}</table>
+                        `;
+                        board.appendChild(card);
+                    });
+                }
+                
+                const now = new Date();
+                document.getElementById('last-updated').textContent = `Last Updated: ${now.toLocaleTimeString()}`;
+
+            } catch (error) {
+                console.error("Fetch error:", error);
+            }
+        }
+
+        // Update immediately, then every 20 seconds
+        updateBoard();
+        setInterval(updateBoard, 20000);
+    </script>
+</body>
+</html>
