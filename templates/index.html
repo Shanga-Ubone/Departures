@@ -111,42 +111,69 @@
         async function updateWeather() {
             try {
                 // Stockholm coordinates: 59.3293°N, 18.0686°E
-                const response = await fetch('https://api.open-meteo.com/v1/forecast?latitude=59.3293&longitude=18.0686&current=temperature_2m,weather_code&temperature_unit=celsius');
+                const response = await fetch('https://api.open-meteo.com/v1/forecast?latitude=59.3293&longitude=18.0686&current=temperature_2m,weather_code&hourly=temperature_2m,weather_code&temperature_unit=celsius&timezone=auto');
                 const data = await response.json();
                 const current = data.current;
+                const hourly = data.hourly;
                 
                 const tempEl = document.getElementById('temp');
                 const conditionEl = document.getElementById('condition');
+                const hourlyEl = document.getElementById('hourly-forecast');
                 
                 tempEl.textContent = `${current.temperature_2m}°C`;
                 
                 // Map WMO weather codes to descriptions
                 const weatherCodes = {
-                    0: 'Clear Sky',
+                    0: 'Clear',
                     1: 'Mostly Clear',
                     2: 'Partly Cloudy',
                     3: 'Overcast',
                     45: 'Foggy',
                     48: 'Foggy',
-                    51: 'Light Drizzle',
-                    53: 'Moderate Drizzle',
-                    55: 'Heavy Drizzle',
-                    61: 'Slight Rain',
-                    63: 'Moderate Rain',
-                    65: 'Heavy Rain',
-                    71: 'Slight Snow',
-                    73: 'Moderate Snow',
-                    75: 'Heavy Snow',
-                    80: 'Slight Showers',
-                    81: 'Moderate Showers',
-                    82: 'Violent Showers',
-                    85: 'Slight Snow Showers',
-                    86: 'Heavy Snow Showers',
+                    51: 'Drizzle',
+                    53: 'Drizzle',
+                    55: 'Drizzle',
+                    61: 'Rain',
+                    63: 'Rain',
+                    65: 'Rain',
+                    71: 'Snow',
+                    73: 'Snow',
+                    75: 'Snow',
+                    80: 'Showers',
+                    81: 'Showers',
+                    82: 'Showers',
+                    85: 'Snow Showers',
+                    86: 'Snow Showers',
                     95: 'Thunderstorm'
                 };
                 
                 const code = current.weather_code;
                 conditionEl.textContent = weatherCodes[code] || 'Unknown';
+                
+                // Display hourly forecast for next 24 hours
+                hourlyEl.innerHTML = '';
+                const now = new Date();
+                const times = hourly.time;
+                const temps = hourly.temperature_2m;
+                const codes = hourly.weather_code;
+                
+                // Find the next 24 hours
+                for (let i = 0; i < Math.min(24, times.length); i++) {
+                    const time = new Date(times[i]);
+                    const hour = time.getHours().toString().padStart(2, '0');
+                    const temp = Math.round(temps[i]);
+                    const weatherCode = codes[i];
+                    const condition = weatherCodes[weatherCode] || 'Unknown';
+                    
+                    const hourItem = document.createElement('div');
+                    hourItem.className = 'hour-item';
+                    hourItem.innerHTML = `
+                        <span class="hour-time">${hour}:00</span>
+                        <span class="hour-temp">${temp}°</span>
+                        <span class="hour-condition">${condition}</span>
+                    `;
+                    hourlyEl.appendChild(hourItem);
+                }
             } catch (error) {
                 console.error('Weather fetch error:', error);
                 document.getElementById('condition').textContent = 'Weather unavailable';
