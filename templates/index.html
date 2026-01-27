@@ -150,15 +150,25 @@
                 const code = current.weather_code;
                 conditionEl.textContent = weatherCodes[code] || 'Unknown';
                 
-                // Display hourly forecast for next 24 hours
+                // Display hourly forecast for next 8 hours
                 hourlyEl.innerHTML = '';
                 const now = new Date();
                 const times = hourly.time;
                 const temps = hourly.temperature_2m;
                 const codes = hourly.weather_code;
                 
-                // Find the next 24 hours
-                for (let i = 0; i < Math.min(24, times.length); i++) {
+                // Find current hour index
+                let startIndex = 0;
+                for (let i = 0; i < times.length; i++) {
+                    const forecastTime = new Date(times[i]);
+                    if (forecastTime.getHours() === now.getHours()) {
+                        startIndex = i;
+                        break;
+                    }
+                }
+                
+                // Show next 8 hours from current time
+                for (let i = startIndex; i < Math.min(startIndex + 8, times.length); i++) {
                     const time = new Date(times[i]);
                     const hour = time.getHours().toString().padStart(2, '0');
                     const temp = Math.round(temps[i]);
