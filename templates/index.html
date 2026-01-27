@@ -63,7 +63,11 @@
                 board.innerHTML = '';
                 document.getElementById('loading').style.display = 'none';
 
-                for (const [group, stations] of Object.entries(data)) {
+                // Order groups: TO WORK first, then FROM WORK
+                const groupOrder = ["TO WORK", "FROM WORK"];
+                for (const group of groupOrder) {
+                    const stations = data[group];
+                    if (!stations) continue;
                     if (stations.length === 0) continue;
 
                     const groupHeader = document.createElement('h2');
