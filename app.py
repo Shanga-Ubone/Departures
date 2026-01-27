@@ -89,16 +89,20 @@ def get_data():
         grouped_config[group][sid]['filters'].append({'line': route['line'], 'dest': route['dest']})
 
     results = {}
-    for group_name, sites in grouped_config.items():
-        results[group_name] = []
-        for site_id, data in sites.items():
-            api_site_name, matches = get_departures(site_id, data['filters'])
-            display_name = data['label'] or api_site_name or f"Site {site_id}"
-            if matches:
-                results[group_name].append({
-                    "station": display_name,
-                    "departures": matches
-                })
+    # Order groups: TO WORK first, then FROM WORK
+    group_order = ["TO WORK", "FROM WORK"]
+    for group_name in group_order:
+        if group_name in grouped_config:
+            results[group_name] = []
+            sites = grouped_config[group_name]
+            for site_id, data in sites.items():
+                api_site_name, matches = get_departures(site_id, data['filters'])
+                display_name = data['label'] or api_site_name or f"Site {site_id}"
+                if matches:
+                    results[group_name].append({
+                        "station": display_name,
+                        "departures": matches
+                    })
     
     return jsonify(results)
 
