@@ -43,17 +43,94 @@
         .status.ontime { color: #69f0ae; }
         
         #loading { text-align: center; margin-top: 20px; color: #888; }
+        
+        .weather-container {
+            background: #2b2b2b;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            text-align: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.5);
+        }
+        .weather-title {
+            color: #4da6ff;
+            font-size: 0.9em;
+            margin-bottom: 10px;
+        }
+        .weather-info {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 20px;
+            font-size: 1.1em;
+        }
+        .temp { color: #ffbf00; font-weight: bold; font-size: 1.5em; }
+        .condition { color: #e0e0e0; }
     </style>
 </head>
 <body>
 
     <h1>DEPARTURES</h1>
+    
+    <div class="weather-container">
+        <div class="weather-title">STOCKHOLM, SWEDEN</div>
+        <div class="weather-info">
+            <div class="temp" id="temp">--°C</div>
+            <div class="condition" id="condition">Loading...</div>
+        </div>
+    </div>
+    
     <div id="last-updated" style="text-align: center; font-size: 0.8em; color: #888; margin-bottom: 20px;"></div>
 
     <div id="board" class="board-container"></div>
     <div id="loading">Connecting to SL Network...</div>
 
     <script>
+        async function updateWeather() {
+            try {
+                // Stockholm coordinates: 59.3293°N, 18.0686°E
+                const response = await fetch('https://api.open-meteo.com/v1/forecast?latitude=59.3293&longitude=18.0686&current=temperature_2m,weather_code&temperature_unit=celsius');
+                const data = await response.json();
+                const current = data.current;
+                
+                const tempEl = document.getElementById('temp');
+                const conditionEl = document.getElementById('condition');
+                
+                tempEl.textContent = `${current.temperature_2m}°C`;
+                
+                // Map WMO weather codes to descriptions
+                const weatherCodes = {
+                    0: 'Clear Sky',
+                    1: 'Mostly Clear',
+                    2: 'Partly Cloudy',
+                    3: 'Overcast',
+                    45: 'Foggy',
+                    48: 'Foggy',
+                    51: 'Light Drizzle',
+                    53: 'Moderate Drizzle',
+                    55: 'Heavy Drizzle',
+                    61: 'Slight Rain',
+                    63: 'Moderate Rain',
+                    65: 'Heavy Rain',
+                    71: 'Slight Snow',
+                    73: 'Moderate Snow',
+                    75: 'Heavy Snow',
+                    80: 'Slight Showers',
+                    81: 'Moderate Showers',
+                    82: 'Violent Showers',
+                    85: 'Slight Snow Showers',
+                    86: 'Heavy Snow Showers',
+                    95: 'Thunderstorm'
+                };
+                
+                const code = current.weather_code;
+                conditionEl.textContent = weatherCodes[code] || 'Unknown';
+            } catch (error) {
+                console.error('Weather fetch error:', error);
+                document.getElementById('condition').textContent = 'Weather unavailable';
+            }
+        }
+        
         async function updateBoard() {
             try {
                 const response = await fetch('/api/data');
@@ -109,7 +186,9 @@
         }
 
         // Update immediately, then every 20 seconds
+        updateWeather();
         updateBoard();
+        setInterval(updateWeather, 600000); // Update weather every 10 minutes
         setInterval(updateBoard, 20000);
     </script>
 </body>
