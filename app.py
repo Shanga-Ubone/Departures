@@ -113,7 +113,6 @@ def get_departures(site_id, filters):
     config, _ = get_config()
     api_base_url = config.get('api_base_url', 'https://transport.integration.sl.se/v1/sites')
     api_timeout = config.get('api_timeout', 10)
-    max_departures = config.get('max_departures_per_station', 10)
     
     url = f"{api_base_url}/{site_id}/departures"
     headers = {"User-Agent": "SLTrafficMonitor/1.0"}
@@ -145,7 +144,7 @@ def get_departures(site_id, filters):
         
         # Sort by departure time and limit results
         filtered.sort(key=lambda x: x.get('expected') or x.get('scheduled'))
-        return site_name, filtered[:max_departures], stop_deviations
+        return site_name, filtered, stop_deviations
     
     except requests.exceptions.RequestException as e:
         logger.error(f"API request failed for site {site_id}: {e}")
@@ -181,6 +180,7 @@ def get_data():
     config, grouped_config = get_config()
     cache_ttl = config.get('cache_ttl_seconds', 8)
     group_order = config.get('group_order', ['TO WORK', 'FROM WORK'])
+    max_departures = config.get('max_departures_per_station', 10)
 
     # Check cache first
     cached = get_cached_data(cache_ttl)
@@ -236,7 +236,7 @@ def get_data():
                 display_name = site_config['label'] or site_info.get('site_name') or f"Site {site_id}"
                 group_stations.append({
                     "station": display_name,
-                    "departures": filtered_deps
+                    "departures": filtered_deps[:max_departures]
                 })
                 
                 # Collect deviations for this site/group
