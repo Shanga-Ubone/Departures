@@ -22,5 +22,5 @@
   "api_base_url": "https://transport.integration.sl.se/v1/sites",
   "max_departures_per_station": 10,
   "cache_ttl_seconds": 8,
-  "group_order": ["TO WORK", "FROM WORK"]
+  "group_order": ["TO WORK", "FROM WORK", "OTHER"]
 }
