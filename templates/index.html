@@ -154,6 +154,9 @@
             margin-bottom: 4px;
         }
         .deviation-item:last-child { margin-bottom: 0; }
+        .deviation-item.CANCELLED { color: #ff6b6b; font-weight: bold; }
+        .deviation-item.DIVERSION { color: #ff9800; }
+        .deviation-item.DELAY { color: #ffeb3b; }
     </style>
 </head>
 <body>
@@ -319,7 +322,7 @@
                         
                         item.deviations.forEach(dev => {
                             const devItem = document.createElement('div');
-                            devItem.className = 'deviation-item';
+                            devItem.className = `deviation-item ${dev.consequence}`;
                             devItem.textContent = dev.message;
                             devContainer.appendChild(devItem);
                         });
