@@ -1,5 +1,5 @@
 // Simple service worker for basic caching and offline support
-const CACHE_NAME = 'departures-v4';
+const CACHE_NAME = 'departures-v5';
 const urlsToCache = [
     '/',
     '/static/sw.js',

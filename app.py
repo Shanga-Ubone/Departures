@@ -242,22 +242,42 @@ def get_data():
                 # Collect deviations for this site/group
                 # 1. Stop deviations (always relevant if we show the station)
                 if site_info.get('stop_deviations'):
-                    group_deviations.extend(site_info['stop_deviations'])
+                    for dev in site_info['stop_deviations']:
+                        d = dev.copy()
+                        d['lines'] = set()
+                        group_deviations.append(d)
                 
                 # 2. Deviations attached to specific departures
                 for dep in filtered_deps:
                     if dep.get('deviations'):
-                        group_deviations.extend(dep['deviations'])
+                        line_num = dep.get('line_num')
+                        for dev in dep['deviations']:
+                            d = dev.copy()
+                            d['lines'] = {str(line_num)} if line_num else set()
+                            group_deviations.append(d)
         
         if group_stations:
-            # Deduplicate deviations by message
-            unique_deviations = []
-            seen_msgs = set()
+            # Deduplicate deviations by message and aggregate lines
+            dev_map = {}
             for dev in group_deviations:
                 msg = dev.get('message')
-                if msg and msg not in seen_msgs:
-                    seen_msgs.add(msg)
-                    unique_deviations.append(dev)
+                if not msg: continue
+                
+                if msg not in dev_map:
+                    dev_map[msg] = dev
+                else:
+                    dev_map[msg]['lines'].update(dev['lines'])
+            
+            unique_deviations = []
+            for dev in dev_map.values():
+                if dev['lines']:
+                    # Sort lines naturally (e.g. 4, 30, 100)
+                    sorted_lines = sorted(list(dev['lines']), key=lambda x: (len(x), x))
+                    prefix = f"Line {', '.join(sorted_lines)}: "
+                    dev['message'] = prefix + dev['message']
+                
+                dev.pop('lines', None)
+                unique_deviations.append(dev)
             
             results.append({
                 "group": group_name,
