@@ -11,50 +11,46 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Load configuration from config.json
-def load_config():
+# Global cache for config
+_config_cache = {'data': {}, 'grouped': {}, 'mtime': 0}
+
+def get_config():
+    """Load configuration, reloading if file changed."""
     config_path = os.path.join(os.path.dirname(__file__), 'config.json')
     try:
-        with open(config_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        logger.error(f"Config file not found at {config_path}")
-        return {}
-    except json.JSONDecodeError as e:
-        logger.error(f"Invalid JSON in config file: {e}")
-        return {}
-
-CONFIG = load_config()
-API_BASE_URL = CONFIG.get('api_base_url', 'https://transport.integration.sl.se/v1/sites')
-API_TIMEOUT = CONFIG.get('api_timeout', 10)
-MAX_DEPARTURES = CONFIG.get('max_departures_per_station', 10)
-CACHE_TTL = CONFIG.get('cache_ttl_seconds', 8)
-GROUP_ORDER = CONFIG.get('group_order', ['TO WORK', 'FROM WORK'])
+        current_mtime = os.path.getmtime(config_path)
+        if current_mtime > _config_cache['mtime']:
+            logger.info("Reloading configuration from config.json")
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            
+            # Build grouped config
+            grouped = {}
+            for route in config.get('monitored_routes', []):
+                group = route['group']
+                site_id = route['id']
+                
+                if group not in grouped:
+                    grouped[group] = {}
+                if site_id not in grouped[group]:
+                    grouped[group][site_id] = {'label': route.get('label'), 'filters': []}
+                
+                grouped[group][site_id]['filters'].append({
+                    'line': str(route['line']),  # Normalize to string
+                    'dest': route['dest'].lower()  # Normalize to lowercase
+                })
+            
+            _config_cache['data'] = config
+            _config_cache['grouped'] = grouped
+            _config_cache['mtime'] = current_mtime
+            
+        return _config_cache['data'], _config_cache['grouped']
+    except Exception as e:
+        logger.error(f"Error loading config: {e}")
+        return _config_cache['data'], _config_cache['grouped']
 
 # Cache storage
 _cache = {'data': None, 'timestamp': None}
-
-# Build grouped config once at startup (instead of on every request)
-def build_grouped_config():
-    """Build grouped and deduplicated configuration from monitored routes."""
-    grouped = {}
-    for route in CONFIG.get('monitored_routes', []):
-        group = route['group']
-        site_id = route['id']
-        
-        if group not in grouped:
-            grouped[group] = {}
-        if site_id not in grouped[group]:
-            grouped[group][site_id] = {'label': route.get('label'), 'filters': []}
-        
-        grouped[group][site_id]['filters'].append({
-            'line': str(route['line']),  # Normalize to string
-            'dest': route['dest'].lower()  # Normalize to lowercase
-        })
-    
-    return grouped
-
-GROUPED_CONFIG = build_grouped_config()
 
 
 def parse_datetime(iso_string):
@@ -114,11 +110,16 @@ def enrich_departure(departure, line_num, filters):
 
 def get_departures(site_id, filters):
     """Fetch and filter departures for a site."""
-    url = f"{API_BASE_URL}/{site_id}/departures"
+    config, _ = get_config()
+    api_base_url = config.get('api_base_url', 'https://transport.integration.sl.se/v1/sites')
+    api_timeout = config.get('api_timeout', 10)
+    max_departures = config.get('max_departures_per_station', 10)
+    
+    url = f"{api_base_url}/{site_id}/departures"
     headers = {"User-Agent": "SLTrafficMonitor/1.0"}
     
     try:
-        response = requests.get(url, headers=headers, timeout=API_TIMEOUT)
+        response = requests.get(url, headers=headers, timeout=api_timeout)
         response.raise_for_status()
         data = response.json()
         departures = data.get('departures', [])
@@ -143,7 +144,7 @@ def get_departures(site_id, filters):
         
         # Sort by departure time and limit results
         filtered.sort(key=lambda x: x.get('expected') or x.get('scheduled'))
-        return site_name, filtered[:MAX_DEPARTURES]
+        return site_name, filtered[:max_departures]
     
     except requests.exceptions.RequestException as e:
         logger.error(f"API request failed for site {site_id}: {e}")
@@ -157,13 +158,13 @@ def get_departures(site_id, filters):
 def index():
     return render_template('index.html')
 
-def get_cached_data():
+def get_cached_data(ttl):
     """Get cached data if still fresh, otherwise return None."""
     if _cache['data'] is None or _cache['timestamp'] is None:
         return None
     
     age = (datetime.now() - _cache['timestamp']).total_seconds()
-    if age < CACHE_TTL:
+    if age < ttl:
         return _cache['data']
     
     return None
@@ -176,8 +177,12 @@ def cache_data(data):
 @app.route('/api/data')
 def get_data():
     """Get departure data for all monitored routes."""
+    config, grouped_config = get_config()
+    cache_ttl = config.get('cache_ttl_seconds', 8)
+    group_order = config.get('group_order', ['TO WORK', 'FROM WORK'])
+
     # Check cache first
-    cached = get_cached_data()
+    cached = get_cached_data(cache_ttl)
     if cached is not None:
         return jsonify(cached)
     
@@ -185,7 +190,7 @@ def get_data():
     site_data = {}  # Map of site_id -> {site_name, groups_needed}
     
     # First pass: collect all sites and their associated groups
-    for group in GROUPED_CONFIG.values():
+    for group in grouped_config.values():
         for site_id in group.keys():
             if site_id not in site_data:
                 site_data[site_id] = {'site_name': None, 'groups': {}}
@@ -194,7 +199,7 @@ def get_data():
     for site_id in site_data.keys():
         # Collect all filters for this site from all groups
         all_filters = []
-        for group_name, sites in GROUPED_CONFIG.items():
+        for group_name, sites in grouped_config.items():
             if site_id in sites:
                 all_filters.extend(sites[site_id]['filters'])
                 site_data[site_id]['groups'][group_name] = sites[site_id]
@@ -206,12 +211,12 @@ def get_data():
     
     # Third pass: organize results by group
     results = {}
-    for group_name in GROUP_ORDER:
-        if group_name not in GROUPED_CONFIG:
+    for group_name in group_order:
+        if group_name not in grouped_config:
             continue
         
         results[group_name] = []
-        sites = GROUPED_CONFIG[group_name]
+        sites = grouped_config[group_name]
         
         for site_id, site_config in sites.items():
             site_info = site_data.get(site_id, {})
