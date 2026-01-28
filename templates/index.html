@@ -252,8 +252,8 @@
                 board.innerHTML = '';
                 document.getElementById('loading').style.display = 'none';
 
-                // Order groups: TO WORK first, then FROM WORK
-                const groupOrder = ["TO WORK", "FROM WORK"];
+                // Get groups dynamically from API response (preserves order from backend)
+                const groupOrder = Object.keys(data);
                 for (const group of groupOrder) {
                     const stations = data[group];
                     if (!stations) continue;
