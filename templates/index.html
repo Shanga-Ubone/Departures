@@ -133,6 +133,27 @@
             .hourly-forecast { gap: 6px; margin-top: 10px; }
             .hour-item { padding: 8px; min-width: 55px; font-size: 0.8em; }
         }
+        
+        .deviations-container {
+            background: #2b2b2b;
+            border-left: 4px solid #ff6b6b;
+            padding: 12px;
+            margin-top: 10px;
+            border-radius: 0 4px 4px 0;
+        }
+        .deviation-header {
+            color: #ff6b6b;
+            font-weight: bold;
+            font-size: 0.85em;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+        }
+        .deviation-item {
+            color: #ffcccc;
+            font-size: 0.9em;
+            margin-bottom: 4px;
+        }
+        .deviation-item:last-child { margin-bottom: 0; }
     </style>
 </head>
 <body>
@@ -285,6 +306,26 @@
                         `;
                         board.appendChild(card);
                     });
+                    
+                    // Render service alerts for the group
+                    if (item.deviations && item.deviations.length > 0) {
+                        const devContainer = document.createElement('div');
+                        devContainer.className = 'deviations-container';
+                        
+                        const devHeader = document.createElement('div');
+                        devHeader.className = 'deviation-header';
+                        devHeader.textContent = '⚠️ Service Alerts';
+                        devContainer.appendChild(devHeader);
+                        
+                        item.deviations.forEach(dev => {
+                            const devItem = document.createElement('div');
+                            devItem.className = 'deviation-item';
+                            devItem.textContent = dev.message;
+                            devContainer.appendChild(devItem);
+                        });
+                        
+                        board.appendChild(devContainer);
+                    }
                 }
                 
                 const now = new Date();

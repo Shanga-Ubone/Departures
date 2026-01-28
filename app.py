@@ -123,6 +123,7 @@ def get_departures(site_id, filters):
         response.raise_for_status()
         data = response.json()
         departures = data.get('departures', [])
+        stop_deviations = data.get('stop_deviations', [])
         
         # Extract site name from first departure
         site_name = None
@@ -144,14 +145,14 @@ def get_departures(site_id, filters):
         
         # Sort by departure time and limit results
         filtered.sort(key=lambda x: x.get('expected') or x.get('scheduled'))
-        return site_name, filtered[:max_departures]
+        return site_name, filtered[:max_departures], stop_deviations
     
     except requests.exceptions.RequestException as e:
         logger.error(f"API request failed for site {site_id}: {e}")
-        return None, []
+        return None, [], []
     except Exception as e:
         logger.error(f"Unexpected error fetching departures for site {site_id}: {e}")
-        return None, []
+        return None, [], []
 
 
 @app.route('/')
@@ -205,9 +206,10 @@ def get_data():
                 site_data[site_id]['groups'][group_name] = sites[site_id]
         
         # Fetch departures once for this site
-        site_name, departures = get_departures(site_id, all_filters)
+        site_name, departures, stop_deviations = get_departures(site_id, all_filters)
         site_data[site_id]['site_name'] = site_name
         site_data[site_id]['departures'] = departures
+        site_data[site_id]['stop_deviations'] = stop_deviations
     
     # Third pass: organize results by group
     results = []
@@ -216,6 +218,7 @@ def get_data():
             continue
         
         group_stations = []
+        group_deviations = []
         sites = grouped_config[group_name]
         
         for site_id, site_config in sites.items():
@@ -235,11 +238,31 @@ def get_data():
                     "station": display_name,
                     "departures": filtered_deps
                 })
+                
+                # Collect deviations for this site/group
+                # 1. Stop deviations (always relevant if we show the station)
+                if site_info.get('stop_deviations'):
+                    group_deviations.extend(site_info['stop_deviations'])
+                
+                # 2. Deviations attached to specific departures
+                for dep in filtered_deps:
+                    if dep.get('deviations'):
+                        group_deviations.extend(dep['deviations'])
         
         if group_stations:
+            # Deduplicate deviations by message
+            unique_deviations = []
+            seen_msgs = set()
+            for dev in group_deviations:
+                msg = dev.get('message')
+                if msg and msg not in seen_msgs:
+                    seen_msgs.add(msg)
+                    unique_deviations.append(dev)
+            
             results.append({
                 "group": group_name,
-                "stations": group_stations
+                "stations": group_stations,
+                "deviations": unique_deviations
             })
     
     # Cache the results
