@@ -2,53 +2,88 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
     <title>Commute Monitor</title>
     <style>
+        * { box-sizing: border-box; }
         body {
             background-color: #1a1a1a;
             color: #e0e0e0;
             font-family: 'Courier New', Courier, monospace;
             margin: 0;
-            padding: 20px;
+            padding: 12px;
         }
-        h1 { text-align: center; color: #ffbf00; letter-spacing: 2px; }
+        h1 { 
+            text-align: center; 
+            color: #ffbf00; 
+            letter-spacing: 2px;
+            margin: 10px 0;
+            font-size: 1.8em;
+        }
+        h2 { font-size: 1.2em; }
         .group-header {
             color: #4da6ff;
             border-bottom: 2px solid #4da6ff;
-            margin-top: 30px;
+            margin-top: 25px;
             margin-bottom: 10px;
-            padding-bottom: 5px;
+            padding-bottom: 8px;
+            font-size: 1em;
         }
-        .board-container { display: flex; flex-direction: column; gap: 15px; }
+        .board-container { display: flex; flex-direction: column; gap: 12px; }
         .station-card {
             background: #2b2b2b;
-            padding: 10px;
+            padding: 12px;
             border-radius: 4px;
             box-shadow: 0 2px 5px rgba(0,0,0,0.5);
         }
         .station-name {
             font-weight: bold;
             color: #ffbf00;
-            margin-bottom: 5px;
+            margin-bottom: 10px;
             text-transform: uppercase;
+            font-size: 0.95em;
         }
         table { width: 100%; border-collapse: collapse; }
-        th, td { text-align: left; padding: 4px; }
-        .time { color: #fff; font-weight: bold; width: 60px; }
-        .line { color: #ffbf00; width: 50px; }
-        .dest { color: #ddd; }
+        th, td { text-align: left; padding: 8px 6px; }
+        .time { color: #fff; font-weight: bold; width: auto; }
+        .line { color: #ffbf00; width: auto; }
+        .dest { color: #ddd; word-break: break-word; }
         .status { text-align: right; }
         .status.late { color: #ff6b6b; }
         .status.ontime { color: #69f0ae; }
         
-        #loading { text-align: center; margin-top: 20px; color: #888; }
+        @media (max-width: 767px) {
+            body { padding: 10px; }
+            h1 { font-size: 1.5em; letter-spacing: 1px; margin: 5px 0; }
+            .group-header { margin-top: 20px; font-size: 0.95em; }
+            .board-container { gap: 10px; }
+            .station-card { padding: 10px; }
+            table { width: 100%; }
+            th, td { padding: 10px 6px; font-size: 0.9em; }
+            .time { font-size: 1.1em; }
+        }
+        
+        #loading { text-align: center; margin-top: 15px; color: #888; font-size: 0.95em; }
+        
+        #last-updated { 
+            text-align: center; 
+            font-size: 0.8em; 
+            color: #888; 
+            margin-bottom: 15px;
+        }
+        
+        @media (max-width: 767px) {
+            #loading { margin-top: 10px; }
+            #last-updated { margin-bottom: 10px; }
+        }
         
         .weather-container {
             background: #2b2b2b;
             padding: 15px;
             border-radius: 4px;
-            margin-bottom: 20px;
+            margin-bottom: 15px;
             text-align: center;
             box-shadow: 0 2px 5px rgba(0,0,0,0.5);
         }
@@ -61,32 +96,43 @@
             display: flex;
             justify-content: center;
             align-items: center;
-            gap: 20px;
+            gap: 15px;
             font-size: 1.1em;
+            flex-wrap: wrap;
         }
         .temp { color: #ffbf00; font-weight: bold; font-size: 1.5em; }
-        .condition { color: #e0e0e0; }
+        .condition { color: #e0e0e0; flex: 1 1 auto; min-width: 100px; }
         
         .hourly-forecast {
             display: flex;
-            gap: 10px;
-            margin-top: 15px;
+            gap: 8px;
+            margin-top: 12px;
             overflow-x: auto;
             padding: 5px 0;
+            -webkit-overflow-scrolling: touch;
         }
         .hour-item {
             background: #1a1a1a;
-            padding: 8px 12px;
+            padding: 10px;
             border-radius: 3px;
             text-align: center;
             white-space: nowrap;
             font-size: 0.85em;
             flex-shrink: 0;
             border-left: 2px solid #4da6ff;
+            min-width: 60px;
         }
         .hour-time { color: #4da6ff; font-weight: bold; display: block; margin-bottom: 3px; }
         .hour-temp { color: #ffbf00; font-weight: bold; display: block; }
         .hour-condition { color: #ddd; font-size: 0.75em; }
+        
+        @media (max-width: 767px) {
+            .weather-container { padding: 12px; margin-bottom: 12px; }
+            .weather-info { gap: 10px; font-size: 1em; }
+            .temp { font-size: 1.3em; }
+            .hourly-forecast { gap: 6px; margin-top: 10px; }
+            .hour-item { padding: 8px; min-width: 55px; font-size: 0.8em; }
+        }
     </style>
 </head>
 <body>
@@ -102,12 +148,21 @@
         <div class="hourly-forecast" id="hourly-forecast"></div>
     </div>
     
-    <div id="last-updated" style="text-align: center; font-size: 0.8em; color: #888; margin-bottom: 20px;"></div>
+    <div id="last-updated"></div>
 
     <div id="board" class="board-container"></div>
     <div id="loading">Connecting to SL Network...</div>
 
     <script>
+        // Debounce function to prevent excessive API calls
+        function debounce(func, delay) {
+            let timeoutId;
+            return function(...args) {
+                clearTimeout(timeoutId);
+                timeoutId = setTimeout(() => func.apply(this, args), delay);
+            };
+        }
+        
         async function updateWeather() {
             try {
                 // Stockholm coordinates: 59.3293°N, 18.0686°E
@@ -157,18 +212,16 @@
                 const temps = hourly.temperature_2m;
                 const codes = hourly.weather_code;
                 
-                // Find current hour index
-                let startIndex = 0;
-                for (let i = 0; i < times.length; i++) {
-                    const forecastTime = new Date(times[i]);
-                    if (forecastTime.getHours() === now.getHours()) {
-                        startIndex = i;
-                        break;
-                    }
-                }
+                // Find current hour index more efficiently
+                const currentHour = now.getHours();
+                const startIndex = times.findIndex(time => {
+                    const forecastTime = new Date(time);
+                    return forecastTime.getHours() === currentHour;
+                });
                 
-                // Show next 8 hours from current time
-                for (let i = startIndex; i < Math.min(startIndex + 8, times.length); i++) {
+                // Show next 8 hours from current time (use max instead of min for safety)
+                const endIndex = Math.min(startIndex + 8, times.length);
+                for (let i = Math.max(0, startIndex); i < endIndex; i++) {
                     const time = new Date(times[i]);
                     const hour = time.getHours().toString().padStart(2, '0');
                     const temp = Math.round(temps[i]);
@@ -244,11 +297,26 @@
             }
         }
 
-        // Update immediately, then every 20 seconds
+        // Create debounced versions of update functions
+        const debouncedUpdateWeather = debounce(updateWeather, 1000);
+        const debouncedUpdateBoard = debounce(updateBoard, 1000);
+        
+        // Update immediately
         updateWeather();
         updateBoard();
-        setInterval(updateWeather, 600000); // Update weather every 10 minutes
+        
+        // Set up intervals with optimized timing
+        // Weather: 10 minutes
+        setInterval(updateWeather, 600000);
+        // Transit: 20 seconds
         setInterval(updateBoard, 20000);
+        
+        // Register service worker for offline caching support
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js').catch(() => {
+                // Service worker registration failed, but app will still work
+            });
+        }
     </script>
 </body>
 </html>
