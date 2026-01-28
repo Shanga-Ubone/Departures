@@ -239,7 +239,9 @@ def get_data():
     # Cache the results
     cache_data(results)
     
-    return jsonify(results)
+    response = jsonify(results)
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    return response
 
 if __name__ == '__main__':
     debug_mode = os.getenv('FLASK_DEBUG', 'True').lower() == 'true'

@@ -1,5 +1,5 @@
 // Simple service worker for basic caching and offline support
-const CACHE_NAME = 'departures-v1';
+const CACHE_NAME = 'departures-v2';
 const urlsToCache = [
     '/',
     '/static/sw.js',
@@ -23,6 +23,23 @@ self.addEventListener('fetch', event => {
     // Only handle GET requests
     if (event.request.method !== 'GET') return;
     
+    // Network-first strategy for API data (always try to fetch fresh data first)
+    if (event.request.url.includes('/api/data')) {
+        event.respondWith(
+            fetch(event.request).then(response => {
+                const responseClone = response.clone();
+                caches.open(CACHE_NAME).then(cache => {
+                    cache.put(event.request, responseClone);
+                });
+                return response;
+            }).catch(() => {
+                return caches.match(event.request);
+            })
+        );
+        return;
+    }
+    
+    // Cache-first strategy for static assets
     event.respondWith(
         caches.match(event.request).then(response => {
             if (response) {
