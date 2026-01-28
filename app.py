@@ -213,7 +213,7 @@ def get_data():
     
     # Third pass: organize results by group
     results = []
-    allowed_consequences = {'CANCELLED', 'DIVERSION', 'DELAY'}
+    allowed_levels = {2, 3}
     for group_name in group_order:
         if group_name not in grouped_config:
             continue
@@ -244,7 +244,7 @@ def get_data():
                 # 1. Stop deviations (always relevant if we show the station)
                 if site_info.get('stop_deviations'):
                     for dev in site_info['stop_deviations']:
-                        if dev.get('consequence') in allowed_consequences:
+                        if dev.get('importance_level') in allowed_levels:
                             d = dev.copy()
                             d['lines'] = set()
                             group_deviations.append(d)
@@ -254,7 +254,7 @@ def get_data():
                     if dep.get('deviations'):
                         line_num = dep.get('line_num')
                         for dev in dep['deviations']:
-                            if dev.get('consequence') in allowed_consequences:
+                            if dev.get('importance_level') in allowed_levels:
                                 d = dev.copy()
                                 d['lines'] = {str(line_num)} if line_num else set()
                                 group_deviations.append(d)
@@ -273,11 +273,16 @@ def get_data():
             
             unique_deviations = []
             for dev in dev_map.values():
+                effect = dev.get('consequence', 'ALERT')
+                text = dev.get('message', '')
+                
                 if dev['lines']:
                     # Sort lines naturally (e.g. 4, 30, 100)
                     sorted_lines = sorted(list(dev['lines']), key=lambda x: (len(x), x))
-                    prefix = f"Line {', '.join(sorted_lines)}: "
-                    dev['message'] = prefix + dev['message']
+                    dev['message'] = f"Line {', '.join(sorted_lines)}: [{effect}] {text}"
+                else:
+                    # Station-wide alerts
+                    dev['message'] = f"[{effect}] {text}"
                 
                 dev.pop('lines', None)
                 unique_deviations.append(dev)
