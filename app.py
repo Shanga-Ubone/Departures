@@ -213,7 +213,6 @@ def get_data():
     
     # Third pass: organize results by group
     results = []
-    allowed_levels = {2, 3}
     for group_name in group_order:
         if group_name not in grouped_config:
             continue
@@ -244,20 +243,18 @@ def get_data():
                 # 1. Stop deviations (always relevant if we show the station)
                 if site_info.get('stop_deviations'):
                     for dev in site_info['stop_deviations']:
-                        if dev.get('importance_level') in allowed_levels:
-                            d = dev.copy()
-                            d['lines'] = set()
-                            group_deviations.append(d)
+                        d = dev.copy()
+                        d['lines'] = set()
+                        group_deviations.append(d)
                 
                 # 2. Deviations attached to specific departures
                 for dep in filtered_deps:
                     if dep.get('deviations'):
                         line_num = dep.get('line_num')
                         for dev in dep['deviations']:
-                            if dev.get('importance_level') in allowed_levels:
-                                d = dev.copy()
-                                d['lines'] = {str(line_num)} if line_num else set()
-                                group_deviations.append(d)
+                            d = dev.copy()
+                            d['lines'] = {str(line_num)} if line_num else set()
+                            group_deviations.append(d)
         
         if group_stations:
             # Deduplicate deviations by message and aggregate lines
