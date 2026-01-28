@@ -119,7 +119,7 @@ def get_departures(site_id, filters):
     headers = {"User-Agent": "SLTrafficMonitor/1.0"}
     
     try:
-        response = requests.get(url, headers=headers, timeout=api_timeout)
+        response = requests.get(url, headers=headers, params={'forecast': 60}, timeout=api_timeout)
         response.raise_for_status()
         data = response.json()
         departures = data.get('departures', [])
