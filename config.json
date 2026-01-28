@@ -15,7 +15,6 @@
     {"group": "FROM WORK", "id": 9001, "line": "18", "dest": "Farsta strand", "label": null},
     {"group": "FROM WORK", "id": 9001, "line": "17", "dest": "Skarpnäck", "label": null},
     {"group": "FROM WORK", "id": 9189, "line": "30", "dest": "Sickla", "label": null},
-    {"group": "FROM WORK", "id": 9189, "line": "144", "dest": "Fruängen", "label": null},
     {"group": "OTHER", "id": 1550, "line": "30", "dest": "Solna", "label": null},
     {"group": "OTHER", "id": 1550, "line": "74", "dest": "Hornsberg", "label": null}
   ],
