@@ -8,7 +8,7 @@
     {"group": "TO WORK", "id": 9189, "line": "19", "dest": "Hässelby strand", "label": null},
     {"group": "TO WORK", "id": 9001, "line": "11", "dest": "Akalla", "label": null},
     {"group": "FROM WORK", "id": 9507, "line": "41", "dest": "Södertälje centrum", "label": null},
-    {"group": "FROM WORK", "id": 9507, "line": "41", "dest": "Tumba", "label": null},
+    {"group": "FROM WORK", "id": 9507, "line": "40", "dest": "Tumba", "label": null},
     {"group": "FROM WORK", "id": 9531, "line": "30", "dest": "Sickla", "label": null},
     {"group": "FROM WORK", "id": 9302, "line": "11", "dest": "Kungsträdgården", "label": null},
     {"group": "FROM WORK", "id": 9001, "line": "19", "dest": "Hagsätra", "label": null},
