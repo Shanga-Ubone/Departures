@@ -210,12 +210,12 @@ def get_data():
         site_data[site_id]['departures'] = departures
     
     # Third pass: organize results by group
-    results = {}
+    results = []
     for group_name in group_order:
         if group_name not in grouped_config:
             continue
         
-        results[group_name] = []
+        group_stations = []
         sites = grouped_config[group_name]
         
         for site_id, site_config in sites.items():
@@ -231,10 +231,16 @@ def get_data():
             
             if filtered_deps:
                 display_name = site_config['label'] or site_info.get('site_name') or f"Site {site_id}"
-                results[group_name].append({
+                group_stations.append({
                     "station": display_name,
                     "departures": filtered_deps
                 })
+        
+        if group_stations:
+            results.append({
+                "group": group_name,
+                "stations": group_stations
+            })
     
     # Cache the results
     cache_data(results)
