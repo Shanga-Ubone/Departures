@@ -117,8 +117,14 @@ def get_departures(site_id, filters):
     url = f"{api_base_url}/{site_id}/departures"
     headers = {"User-Agent": "SLTrafficMonitor/1.0"}
     
+    # Look back 20 minutes to catch late departures that have a scheduled time in the past
+    # but haven't arrived yet. We extend the forecast window to cover this past period.
+    past_window = 20
+    future_window = 60
+    start_time = (datetime.utcnow() - timedelta(minutes=past_window)).strftime('%Y-%m-%dT%H:%M:%SZ')
+
     try:
-        response = requests.get(url, headers=headers, params={'forecast': 60}, timeout=api_timeout)
+        response = requests.get(url, headers=headers, params={'forecast': past_window + future_window, 'time': start_time}, timeout=api_timeout)
         response.raise_for_status()
         data = response.json()
         departures = data.get('departures', [])
