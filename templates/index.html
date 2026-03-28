@@ -157,12 +157,64 @@
         .deviation-item.CANCELLED { color: #ff6b6b; font-weight: bold; }
         .deviation-item.DIVERSION { color: #ff9800; }
         .deviation-item.DELAY { color: #ffeb3b; }
+
+        /* Status banner */
+        .status-banner {
+            padding: 14px;
+            border-radius: 4px;
+            text-align: center;
+            font-weight: bold;
+            font-size: 1.1em;
+            letter-spacing: 2px;
+            margin-bottom: 15px;
+        }
+        .status-banner.ok   { background: #1a3d1a; color: #69f0ae; border: 1px solid #2d7a2d; }
+        .status-banner.warn { background: #3d2e00; color: #ffd54f; border: 1px solid #b87d00; }
+        .status-banner.crit { background: #3d0d0d; color: #ff6b6b; border: 1px solid #cc2222; }
+
+        /* Card status colours via left border */
+        .station-card        { border-left: 4px solid #2d7a2d; cursor: pointer; -webkit-user-select: none; user-select: none; }
+        .station-card.warn   { border-left-color: #b87d00; }
+        .station-card.crit   { border-left-color: #cc2222; }
+
+        /* Card header row */
+        .card-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            background: #2d7a2d;
+        }
+        .station-card.warn .status-dot { background: #b87d00; }
+        .station-card.crit .status-dot { background: #cc2222; }
+        .card-header .station-name { margin-bottom: 0; flex: 1; }
+        .chevron { color: #888; font-size: 0.75em; transition: transform 0.15s; flex-shrink: 0; }
+        .station-card.expanded .chevron { transform: rotate(180deg); }
+
+        /* Next departure summary */
+        .card-next { color: #aaa; font-size: 0.85em; margin-top: 6px; padding-left: 20px; }
+        .card-next .late   { color: #ff6b6b; }
+        .card-next .ontime { color: #69f0ae; }
+
+        /* Collapsible table */
+        .departures-wrapper { display: none; margin-top: 10px; }
+        .station-card.expanded .departures-wrapper { display: block; }
+
+        /* Deviations at top of group (margin-bottom instead of margin-top) */
+        .deviations-container { margin-top: 0; margin-bottom: 12px; }
     </style>
 </head>
 <body>
 
     <h1>DEPARTURES</h1>
-    
+
+    <div id="commute-status-banner" class="status-banner ok">● CHECKING...</div>
+
     <div class="weather-container">
         <div class="weather-title">STOCKHOLM, SWEDEN</div>
         <div class="weather-info">
@@ -267,70 +319,124 @@
             }
         }
         
+        const STATUS_RANK = { ok: 0, warn: 1, crit: 2 };
+
+        function getDelayMinutes(statusText) {
+            if (statusText === 'On Time') return 0;
+            const match = statusText.match(/([+-]?\d+)\s*min/);
+            return match ? parseInt(match[1], 10) : 0;
+        }
+
+        function cardStatusFromDepartures(departures) {
+            let max = 0;
+            for (const dep of departures) {
+                max = Math.max(max, getDelayMinutes(dep.status_text));
+            }
+            if (max > 7) return 'crit';
+            if (max >= 3) return 'warn';
+            return 'ok';
+        }
+
+        function deviationStatus(deviations) {
+            if (!deviations || deviations.length === 0) return 'ok';
+            const hasCrit = deviations.some(d => d.consequence === 'CANCELLED' || d.consequence === 'DIVERSION');
+            return hasCrit ? 'crit' : 'warn';
+        }
+
+        function worstOf(a, b) {
+            return STATUS_RANK[a] >= STATUS_RANK[b] ? a : b;
+        }
+
         async function updateBoard() {
             try {
                 const response = await fetch('/api/data');
                 const data = await response.json();
-                
+
                 const board = document.getElementById('board');
                 board.innerHTML = '';
                 document.getElementById('loading').style.display = 'none';
 
-                // Iterate over array to respect order from config.json
+                let overallStatus = 'ok';
+
                 for (const item of data) {
-                    const group = item.group;
-                    const stations = item.stations;
+                    const deviations = item.deviations || [];
 
                     const groupHeader = document.createElement('h2');
                     groupHeader.className = 'group-header';
-                    groupHeader.textContent = group;
+                    groupHeader.textContent = item.group;
                     board.appendChild(groupHeader);
 
-                    stations.forEach(station => {
-                        const card = document.createElement('div');
-                        card.className = 'station-card';
-                        
-                        let rows = '';
-                        station.departures.forEach(dep => {
-                            const statusClass = dep.status_text === 'On Time' ? 'ontime' : 'late';
-                            rows += `
-                                <tr>
-                                    <td class="line">${dep.line_num}</td>
-                                    <td class="dest">${dep.destination}</td>
-                                    <td class="time">${dep.display_time}</td>
-                                    <td class="status ${statusClass}">${dep.status_text}</td>
-                                </tr>
-                            `;
-                        });
+                    // Service alerts at the TOP of the group
+                    if (deviations.length > 0) {
+                        overallStatus = worstOf(overallStatus, deviationStatus(deviations));
 
-                        card.innerHTML = `
-                            <div class="station-name">${station.station}</div>
-                            <table>${rows}</table>
-                        `;
-                        board.appendChild(card);
-                    });
-                    
-                    // Render service alerts for the group
-                    if (item.deviations && item.deviations.length > 0) {
                         const devContainer = document.createElement('div');
                         devContainer.className = 'deviations-container';
-                        
+
                         const devHeader = document.createElement('div');
                         devHeader.className = 'deviation-header';
-                        devHeader.textContent = '⚠️ Service Alerts';
+                        devHeader.textContent = '⚠ Service Alerts';
                         devContainer.appendChild(devHeader);
-                        
-                        item.deviations.forEach(dev => {
+
+                        deviations.forEach(dev => {
                             const devItem = document.createElement('div');
                             devItem.className = `deviation-item ${dev.consequence}`;
                             devItem.textContent = dev.message;
                             devContainer.appendChild(devItem);
                         });
-                        
+
                         board.appendChild(devContainer);
                     }
+
+                    // Station cards
+                    item.stations.forEach(station => {
+                        const deps = station.departures;
+                        const cardStatus = cardStatusFromDepartures(deps);
+                        overallStatus = worstOf(overallStatus, cardStatus);
+
+                        const firstDep = deps[0];
+                        let nextText, nextClass;
+                        if (firstDep) {
+                            nextText = `Next: ${firstDep.display_time}  ${firstDep.status_text}`;
+                            nextClass = firstDep.status_text === 'On Time' ? 'ontime' : 'late';
+                        } else {
+                            nextText = 'No departures found';
+                            nextClass = '';
+                        }
+
+                        let rows = '';
+                        deps.forEach(dep => {
+                            const sc = dep.status_text === 'On Time' ? 'ontime' : 'late';
+                            rows += `<tr>
+                                <td class="line">${dep.line_num}</td>
+                                <td class="dest">${dep.destination}</td>
+                                <td class="time">${dep.display_time}</td>
+                                <td class="status ${sc}">${dep.status_text}</td>
+                            </tr>`;
+                        });
+
+                        const card = document.createElement('div');
+                        card.className = `station-card ${cardStatus}`;
+                        card.innerHTML = `
+                            <div class="card-header">
+                                <div class="status-dot"></div>
+                                <div class="station-name">${station.station}</div>
+                                <div class="chevron">▼</div>
+                            </div>
+                            <div class="card-next"><span class="${nextClass}">${nextText}</span></div>
+                            <div class="departures-wrapper"><table>${rows}</table></div>
+                        `;
+                        card.addEventListener('click', () => card.classList.toggle('expanded'));
+                        board.appendChild(card);
+                    });
                 }
-                
+
+                // Update the top banner
+                const bannerLabels = { ok: '● ALL CLEAR', warn: '● MINOR DISRUPTION', crit: '● SIGNIFICANT DELAYS' };
+                const banner = document.getElementById('commute-status-banner');
+                banner.textContent = bannerLabels[overallStatus];
+                banner.className = `status-banner ${overallStatus}`;
+
                 const now = new Date();
                 document.getElementById('last-updated').textContent = `Last Updated: ${now.toLocaleTimeString()}`;
 
