@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Configure Departures</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+            font-family: 'Courier New', Courier, monospace;
+            margin: 0;
+            padding: 12px;
+        }
+
+        /* Header */
+        .page-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .back-btn {
+            color: #4da6ff;
+            text-decoration: none;
+            font-size: 0.9em;
+            padding: 6px 12px;
+            border: 1px solid #4da6ff;
+            border-radius: 4px;
+            white-space: nowrap;
+        }
+        .back-btn:hover { background: #1a2a3a; }
+        .page-title {
+            color: #ffbf00;
+            letter-spacing: 2px;
+            font-size: 1.2em;
+            font-weight: bold;
+            flex: 1;
+            text-align: center;
+        }
+        .save-btn {
+            background: #1a3d1a;
+            color: #69f0ae;
+            border: 1px solid #2d7a2d;
+            padding: 6px 14px;
+            border-radius: 4px;
+            font-family: inherit;
+            font-size: 0.9em;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .save-btn:hover { background: #245c24; }
+        .save-btn:disabled { opacity: 0.5; cursor: default; }
+
+        /* Status message */
+        #status-msg {
+            text-align: center;
+            font-size: 0.85em;
+            min-height: 1.2em;
+            margin-bottom: 8px;
+        }
+        #status-msg.ok { color: #69f0ae; }
+        #status-msg.err { color: #ff6b6b; }
+
+        /* Group sections */
+        .group-section { margin-bottom: 24px; }
+        .group-header {
+            display: flex;
+            align-items: center;
+            color: #4da6ff;
+            border-bottom: 2px solid #4da6ff;
+            margin-bottom: 10px;
+            padding-bottom: 6px;
+            font-size: 1em;
+        }
+        .group-label { flex: 1; }
+        .add-btn {
+            background: none;
+            border: 1px solid #4da6ff;
+            color: #4da6ff;
+            font-family: inherit;
+            font-size: 1.1em;
+            width: 28px;
+            height: 28px;
+            border-radius: 4px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        .add-btn:hover { background: #1a2a3a; }
+
+        /* Route list */
+        .route-list { display: flex; flex-direction: column; gap: 6px; }
+        .route-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: #2b2b2b;
+            padding: 10px 10px;
+            border-radius: 4px;
+            border-left: 3px solid #444;
+            cursor: default;
+        }
+        .route-row.drag-over { border-left-color: #4da6ff; background: #1e2a38; }
+        .route-row.dragging { opacity: 0.4; }
+        .drag-handle {
+            color: #555;
+            cursor: grab;
+            font-size: 1.1em;
+            flex-shrink: 0;
+            padding: 0 2px;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        .drag-handle:active { cursor: grabbing; }
+        .route-info { flex: 1; min-width: 0; }
+        .route-station { color: #ffbf00; font-size: 0.85em; text-transform: uppercase; }
+        .route-detail { color: #aaa; font-size: 0.85em; }
+        .route-detail .line-num { color: #4da6ff; }
+        .reorder-btns { display: flex; flex-direction: column; gap: 2px; }
+        .reorder-btn {
+            background: none;
+            border: none;
+            color: #555;
+            font-size: 0.7em;
+            cursor: pointer;
+            padding: 1px 4px;
+            line-height: 1;
+            font-family: inherit;
+        }
+        .reorder-btn:hover { color: #aaa; }
+        .delete-btn {
+            background: none;
+            border: none;
+            color: #664444;
+            font-size: 1.1em;
+            cursor: pointer;
+            padding: 2px 6px;
+            border-radius: 3px;
+            flex-shrink: 0;
+        }
+        .delete-btn:hover { color: #ff6b6b; background: #2a1a1a; }
+        .empty-hint { color: #555; font-size: 0.85em; font-style: italic; padding: 6px 2px; }
+
+        /* Add route panel */
+        .add-panel {
+            display: none;
+            background: #222;
+            border: 1px solid #333;
+            border-radius: 4px;
+            padding: 12px;
+            margin-top: 8px;
+        }
+        .add-panel.open { display: block; }
+        .panel-title {
+            color: #4da6ff;
+            font-size: 0.85em;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+        }
+        .search-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+        .search-input {
+            flex: 1;
+            background: #1a1a1a;
+            border: 1px solid #444;
+            color: #e0e0e0;
+            font-family: inherit;
+            font-size: 0.9em;
+            padding: 6px 10px;
+            border-radius: 4px;
+            outline: none;
+        }
+        .search-input:focus { border-color: #4da6ff; }
+        .search-btn {
+            background: #1a2a3a;
+            border: 1px solid #4da6ff;
+            color: #4da6ff;
+            font-family: inherit;
+            font-size: 0.85em;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .search-btn:hover { background: #223344; }
+        .panel-loading { color: #888; font-size: 0.85em; }
+        .station-results { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+        .station-result-btn {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            color: #e0e0e0;
+            font-family: inherit;
+            font-size: 0.85em;
+            padding: 7px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            text-align: left;
+        }
+        .station-result-btn:hover { border-color: #4da6ff; color: #4da6ff; }
+        .station-result-btn.selected { border-color: #4da6ff; background: #1a2a3a; color: #4da6ff; }
+        .routes-section { margin-top: 8px; }
+        .routes-section-title { color: #888; font-size: 0.8em; margin-bottom: 6px; }
+        .route-checkboxes { display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto; }
+        .route-checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.85em;
+            padding: 5px 8px;
+            background: #1a1a1a;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        .route-checkbox-label:hover { background: #222; }
+        .route-checkbox-label input { cursor: pointer; accent-color: #4da6ff; }
+        .add-selected-btn {
+            margin-top: 10px;
+            background: #1a2a3a;
+            border: 1px solid #4da6ff;
+            color: #4da6ff;
+            font-family: inherit;
+            font-size: 0.85em;
+            padding: 7px 14px;
+            border-radius: 4px;
+            cursor: pointer;
+            width: 100%;
+        }
+        .add-selected-btn:hover { background: #223344; }
+        .close-panel-btn {
+            float: right;
+            background: none;
+            border: none;
+            color: #555;
+            font-size: 1em;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        .close-panel-btn:hover { color: #aaa; }
+
+        #loading-overlay {
+            text-align: center;
+            padding: 30px;
+            color: #888;
+        }
+
+        @media (max-width: 480px) {
+            .page-title { font-size: 1em; }
+            .route-station { font-size: 0.8em; }
+            .route-detail { font-size: 0.8em; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="page-header">
+    <a href="/" class="back-btn" id="back-link">&#8592; BACK</a>
+    <div class="page-title">CONFIGURE DEPARTURES</div>
+    <button class="save-btn" id="save-btn" disabled>SAVE CHANGES</button>
+</div>
+
+<div id="status-msg"></div>
+
+<div id="loading-overlay">Loading configuration...</div>
+<div id="groups-container"></div>
+
+<script>
+    // ── State ─────────────────────────────────────────────────────────────────
+    let state = { groups: {}, groupOrder: [] };
+    let isDirty = false;
+    let dragSrc = null;
+
+    // ── Init ──────────────────────────────────────────────────────────────────
+    async function init() {
+        try {
+            const res = await fetch('/api/config');
+            const data = await res.json();
+            state.groupOrder = data.group_order;
+            state.groups = {};
+            for (const g of data.group_order) state.groups[g] = [];
+            for (const r of data.routes) {
+                if (state.groups[r.group] !== undefined) {
+                    state.groups[r.group].push(r);
+                }
+            }
+            document.getElementById('loading-overlay').style.display = 'none';
+            renderAll();
+        } catch (e) {
+            document.getElementById('loading-overlay').textContent = 'Failed to load configuration.';
+        }
+    }
+
+    // ── Render ────────────────────────────────────────────────────────────────
+    function renderAll() {
+        const container = document.getElementById('groups-container');
+        container.innerHTML = '';
+        for (const group of state.groupOrder) {
+            container.appendChild(buildGroupSection(group));
+        }
+    }
+
+    function buildGroupSection(group) {
+        const section = document.createElement('div');
+        section.className = 'group-section';
+        section.dataset.group = group;
+
+        const header = document.createElement('div');
+        header.className = 'group-header';
+        header.innerHTML = `<span class="group-label">${group}</span>`;
+
+        const addBtn = document.createElement('button');
+        addBtn.className = 'add-btn';
+        addBtn.textContent = '+';
+        addBtn.title = `Add route to ${group}`;
+        addBtn.addEventListener('click', () => toggleAddPanel(group, section));
+        header.appendChild(addBtn);
+        section.appendChild(header);
+
+        const list = document.createElement('div');
+        list.className = 'route-list';
+        list.dataset.group = group;
+        buildRouteList(group, list);
+        section.appendChild(list);
+
+        const panel = buildAddPanel(group);
+        section.appendChild(panel);
+
+        return section;
+    }
+
+    function buildRouteList(group, list) {
+        list.innerHTML = '';
+        const routes = state.groups[group] || [];
+        if (routes.length === 0) {
+            const hint = document.createElement('div');
+            hint.className = 'empty-hint';
+            hint.textContent = 'No routes configured.';
+            list.appendChild(hint);
+            return;
+        }
+        routes.forEach((route, idx) => {
+            list.appendChild(buildRouteRow(group, route, idx));
+        });
+    }
+
+    function buildRouteRow(group, route, idx) {
+        const row = document.createElement('div');
+        row.className = 'route-row';
+        row.draggable = true;
+        row.dataset.idx = idx;
+
+        const handle = document.createElement('span');
+        handle.className = 'drag-handle';
+        handle.textContent = '≡';
+        handle.title = 'Drag to reorder';
+
+        const info = document.createElement('div');
+        info.className = 'route-info';
+        const stationName = route.station_name || route.label || `Site ${route.id}`;
+        info.innerHTML = `
+            <div class="route-station">${stationName}</div>
+            <div class="route-detail">Line <span class="line-num">${route.line}</span> &rarr; ${route.dest}</div>
+        `;
+
+        const reorderBtns = document.createElement('div');
+        reorderBtns.className = 'reorder-btns';
+
+        const upBtn = document.createElement('button');
+        upBtn.className = 'reorder-btn';
+        upBtn.textContent = '▲';
+        upBtn.title = 'Move up';
+        upBtn.disabled = idx === 0;
+        upBtn.addEventListener('click', () => moveRoute(group, idx, -1));
+
+        const downBtn = document.createElement('button');
+        downBtn.className = 'reorder-btn';
+        downBtn.textContent = '▼';
+        downBtn.title = 'Move down';
+        downBtn.disabled = idx === state.groups[group].length - 1;
+        downBtn.addEventListener('click', () => moveRoute(group, idx, 1));
+
+        reorderBtns.appendChild(upBtn);
+        reorderBtns.appendChild(downBtn);
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'delete-btn';
+        delBtn.textContent = '🗑';
+        delBtn.title = 'Remove';
+        delBtn.addEventListener('click', () => deleteRoute(group, idx));
+
+        row.appendChild(handle);
+        row.appendChild(info);
+        row.appendChild(reorderBtns);
+        row.appendChild(delBtn);
+
+        // Drag-and-drop
+        row.addEventListener('dragstart', (e) => {
+            dragSrc = { group, idx };
+            row.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+        });
+        row.addEventListener('dragend', () => {
+            row.classList.remove('dragging');
+            document.querySelectorAll('.route-row').forEach(r => r.classList.remove('drag-over'));
+        });
+        row.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            document.querySelectorAll('.route-row').forEach(r => r.classList.remove('drag-over'));
+            row.classList.add('drag-over');
+        });
+        row.addEventListener('drop', (e) => {
+            e.preventDefault();
+            row.classList.remove('drag-over');
+            if (!dragSrc || dragSrc.group !== group || dragSrc.idx === idx) return;
+            const routes = state.groups[group];
+            const [moved] = routes.splice(dragSrc.idx, 1);
+            routes.splice(idx, 0, moved);
+            markDirty();
+            rerenderGroup(group);
+        });
+
+        return row;
+    }
+
+    function rerenderGroup(group) {
+        const section = document.querySelector(`.group-section[data-group="${CSS.escape(group)}"]`);
+        if (!section) return;
+        const list = section.querySelector('.route-list');
+        buildRouteList(group, list);
+    }
+
+    // ── Route mutations ───────────────────────────────────────────────────────
+    function deleteRoute(group, idx) {
+        state.groups[group].splice(idx, 1);
+        markDirty();
+        rerenderGroup(group);
+    }
+
+    function moveRoute(group, idx, dir) {
+        const routes = state.groups[group];
+        const newIdx = idx + dir;
+        if (newIdx < 0 || newIdx >= routes.length) return;
+        [routes[idx], routes[newIdx]] = [routes[newIdx], routes[idx]];
+        markDirty();
+        rerenderGroup(group);
+    }
+
+    // ── Add panel ─────────────────────────────────────────────────────────────
+    function buildAddPanel(group) {
+        const panel = document.createElement('div');
+        panel.className = 'add-panel';
+        panel.dataset.panelGroup = group;
+        panel.innerHTML = `
+            <div>
+                <button class="close-panel-btn" title="Close">&times;</button>
+                <div class="panel-title">Add route to ${group}</div>
+            </div>
+            <div class="search-row">
+                <input type="text" class="search-input" placeholder="Station name..." autocomplete="off">
+                <button class="search-btn">SEARCH</button>
+            </div>
+            <div class="panel-loading" style="display:none">Searching...</div>
+            <div class="station-results"></div>
+            <div class="routes-section" style="display:none">
+                <div class="routes-section-title">Available routes — select to add:</div>
+                <div class="route-checkboxes"></div>
+                <button class="add-selected-btn">ADD SELECTED</button>
+            </div>
+        `;
+
+        panel.querySelector('.close-panel-btn').addEventListener('click', () => closeAddPanel(group));
+
+        const input = panel.querySelector('.search-input');
+        const searchBtn = panel.querySelector('.search-btn');
+        const loading = panel.querySelector('.panel-loading');
+        const stationResults = panel.querySelector('.station-results');
+        const routesSection = panel.querySelector('.routes-section');
+        const checkboxes = panel.querySelector('.route-checkboxes');
+        const addSelectedBtn = panel.querySelector('.add-selected-btn');
+
+        let selectedStation = null;
+
+        async function doSearch() {
+            const q = input.value.trim();
+            if (!q) return;
+            stationResults.innerHTML = '';
+            routesSection.style.display = 'none';
+            selectedStation = null;
+            loading.style.display = '';
+            try {
+                const res = await fetch(`/api/search/stations?q=${encodeURIComponent(q)}`);
+                const data = await res.json();
+                loading.style.display = 'none';
+                if (!data.stations.length) {
+                    stationResults.innerHTML = '<div class="panel-loading">No stations found.</div>';
+                    return;
+                }
+                data.stations.forEach(s => {
+                    const btn = document.createElement('button');
+                    btn.className = 'station-result-btn';
+                    btn.textContent = `${s.name} (ID: ${s.id})`;
+                    btn.addEventListener('click', async () => {
+                        panel.querySelectorAll('.station-result-btn').forEach(b => b.classList.remove('selected'));
+                        btn.classList.add('selected');
+                        selectedStation = s;
+                        routesSection.style.display = 'none';
+                        checkboxes.innerHTML = '<span class="panel-loading">Loading routes...</span>';
+                        routesSection.style.display = '';
+                        try {
+                            const r2 = await fetch(`/api/stations/${s.id}/routes`);
+                            const d2 = await r2.json();
+                            checkboxes.innerHTML = '';
+                            if (!d2.routes.length) {
+                                checkboxes.innerHTML = '<span class="panel-loading">No routes found.</span>';
+                                return;
+                            }
+                            // Store site_name on selectedStation for display
+                            selectedStation.site_name = d2.site_name;
+                            d2.routes.forEach(route => {
+                                const label = document.createElement('label');
+                                label.className = 'route-checkbox-label';
+                                label.innerHTML = `
+                                    <input type="checkbox" value="${route.line}|||${route.dest}">
+                                    Line <strong style="color:#4da6ff">${route.line}</strong> &rarr; ${route.dest}
+                                `;
+                                checkboxes.appendChild(label);
+                            });
+                        } catch (e) {
+                            checkboxes.innerHTML = '<span class="panel-loading">Failed to load routes.</span>';
+                        }
+                    });
+                    stationResults.appendChild(btn);
+                });
+            } catch (e) {
+                loading.style.display = 'none';
+                stationResults.innerHTML = '<div class="panel-loading">Search failed.</div>';
+            }
+        }
+
+        searchBtn.addEventListener('click', doSearch);
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+
+        addSelectedBtn.addEventListener('click', () => {
+            if (!selectedStation) return;
+            const checked = checkboxes.querySelectorAll('input[type=checkbox]:checked');
+            if (!checked.length) return;
+            checked.forEach(cb => {
+                const [line, dest] = cb.value.split('|||');
+                state.groups[group].push({
+                    group,
+                    id: selectedStation.id,
+                    line,
+                    dest,
+                    label: null,
+                    station_name: selectedStation.site_name || selectedStation.name
+                });
+            });
+            markDirty();
+            rerenderGroup(group);
+            closeAddPanel(group);
+        });
+
+        return panel;
+    }
+
+    function toggleAddPanel(group, section) {
+        const panel = section.querySelector('.add-panel');
+        if (panel.classList.contains('open')) {
+            closeAddPanel(group);
+        } else {
+            // Close any other open panels first
+            document.querySelectorAll('.add-panel.open').forEach(p => {
+                p.classList.remove('open');
+                p.querySelector('.search-input').value = '';
+                p.querySelector('.station-results').innerHTML = '';
+                p.querySelector('.routes-section').style.display = 'none';
+            });
+            panel.classList.add('open');
+            panel.querySelector('.search-input').focus();
+        }
+    }
+
+    function closeAddPanel(group) {
+        const panel = document.querySelector(`.add-panel[data-panel-group="${CSS.escape(group)}"]`);
+        if (!panel) return;
+        panel.classList.remove('open');
+        panel.querySelector('.search-input').value = '';
+        panel.querySelector('.station-results').innerHTML = '';
+        panel.querySelector('.routes-section').style.display = 'none';
+    }
+
+    // ── Save ──────────────────────────────────────────────────────────────────
+    function markDirty() {
+        isDirty = true;
+        document.getElementById('save-btn').disabled = false;
+        showStatus('');
+    }
+
+    function showStatus(msg, type) {
+        const el = document.getElementById('status-msg');
+        el.textContent = msg;
+        el.className = type || '';
+    }
+
+    document.getElementById('save-btn').addEventListener('click', async () => {
+        const btn = document.getElementById('save-btn');
+        btn.disabled = true;
+        showStatus('Saving...', '');
+
+        const routes = [];
+        for (const group of state.groupOrder) {
+            for (const r of state.groups[group]) {
+                routes.push({ group: r.group, id: r.id, line: r.line, dest: r.dest, label: r.label || null });
+            }
+        }
+
+        try {
+            const res = await fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ routes })
+            });
+            const data = await res.json();
+            if (data.ok) {
+                isDirty = false;
+                showStatus('Saved successfully.', 'ok');
+            } else {
+                showStatus(`Error: ${data.error}`, 'err');
+                btn.disabled = false;
+            }
+        } catch (e) {
+            showStatus('Save failed.', 'err');
+            btn.disabled = false;
+        }
+    });
+
+    // ── Back navigation guard ─────────────────────────────────────────────────
+    document.getElementById('back-link').addEventListener('click', (e) => {
+        if (isDirty) {
+            if (!confirm('You have unsaved changes. Leave without saving?')) {
+                e.preventDefault();
+            }
+        }
+    });
+
+    init();
+</script>
+</body>
+</html>

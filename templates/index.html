@@ -207,11 +207,36 @@
 
         /* Deviations at top of group (margin-bottom instead of margin-top) */
         .deviations-container { margin-top: 0; margin-bottom: 12px; }
+
+        /* Header with settings button */
+        .header-row {
+            position: relative;
+            text-align: center;
+            margin: 10px 0;
+        }
+        .header-row h1 { margin: 0; }
+        .settings-btn {
+            position: absolute;
+            right: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #ffbf00;
+            font-size: 1.4em;
+            text-decoration: none;
+            padding: 4px 8px;
+            border: 1px solid #444;
+            border-radius: 4px;
+            background: #2b2b2b;
+            line-height: 1;
+        }
     </style>
 </head>
 <body>
 
-    <h1>DEPARTURES</h1>
+    <div class="header-row">
+        <h1>DEPARTURES</h1>
+        <a href="/config" class="settings-btn" title="Configure stations">&#9881;</a>
+    </div>
 
     <div id="commute-status-banner" class="status-banner ok">● CHECKING...</div>
 
