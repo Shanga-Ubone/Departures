@@ -363,8 +363,9 @@
         }
 
         function deviationStatus(deviations) {
-            if (!deviations || deviations.length === 0) return 'ok';
-            const hasCrit = deviations.some(d => d.consequence === 'CANCELLED' || d.consequence === 'DIVERSION');
+            const relevant = (deviations || []).filter(d => !d.station_wide);
+            if (!relevant.length) return 'ok';
+            const hasCrit = relevant.some(d => d.consequence === 'CANCELLED' || d.consequence === 'DIVERSION');
             return hasCrit ? 'crit' : 'warn';
         }
 

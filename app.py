@@ -252,8 +252,9 @@ def get_data():
                     for dev in site_info['stop_deviations']:
                         d = dev.copy()
                         d['lines'] = set()
+                        d['station_wide'] = True
                         group_deviations.append(d)
-                
+
                 # 2. Deviations attached to specific departures
                 for dep in filtered_deps:
                     if dep.get('deviations'):
@@ -261,6 +262,7 @@ def get_data():
                         for dev in dep['deviations']:
                             d = dev.copy()
                             d['lines'] = {str(line_num)} if line_num else set()
+                            d['station_wide'] = False
                             group_deviations.append(d)
         
         if group_stations:
@@ -274,6 +276,9 @@ def get_data():
                     dev_map[msg] = dev
                 else:
                     dev_map[msg]['lines'].update(dev['lines'])
+                    # If any source is line-specific, the merged result is not station-wide
+                    if not dev.get('station_wide', True):
+                        dev_map[msg]['station_wide'] = False
             
             unique_deviations = []
             for dev in dev_map.values():
@@ -289,6 +294,7 @@ def get_data():
                     dev['message'] = f"[{effect}] {text}"
                 
                 dev.pop('lines', None)
+                dev.setdefault('station_wide', True)
                 unique_deviations.append(dev)
             
             results.append({
