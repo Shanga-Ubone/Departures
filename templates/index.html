@@ -6,6 +6,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black">
     <title>Commute Monitor</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
     <style>
         * { box-sizing: border-box; }
         body {
@@ -15,9 +16,9 @@
             margin: 0;
             padding: 12px;
         }
-        h1 { 
-            text-align: center; 
-            color: #ffbf00; 
+        h1 {
+            text-align: center;
+            color: #ffbf00;
             letter-spacing: 2px;
             margin: 10px 0;
             font-size: 1.8em;
@@ -48,12 +49,18 @@
         table { width: 100%; border-collapse: collapse; }
         th, td { text-align: left; padding: 8px 6px; }
         .time { color: #fff; font-weight: bold; width: auto; }
+        .dep-time.imminent { color: #ff6b6b; font-weight: bold; }
         .line { color: #ffbf00; width: auto; }
         .dest { color: #ddd; word-break: break-word; }
         .status { text-align: right; }
         .status.late { color: #ff6b6b; }
         .status.ontime { color: #69f0ae; }
-        
+        .map-tap { color: #555; font-size: 0.85em; text-align: center; width: 24px; padding: 8px 2px; }
+
+        /* Tappable departure rows */
+        tr.dep-row { cursor: pointer; transition: background 0.1s; }
+        tr.dep-row:active { background: rgba(255,191,0,0.08); }
+
         @media (max-width: 767px) {
             body { padding: 10px; }
             h1 { font-size: 1.5em; letter-spacing: 1px; margin: 5px 0; }
@@ -64,21 +71,21 @@
             th, td { padding: 10px 6px; font-size: 0.9em; }
             .time { font-size: 1.1em; }
         }
-        
+
         #loading { text-align: center; margin-top: 15px; color: #888; font-size: 0.95em; }
-        
-        #last-updated { 
-            text-align: center; 
-            font-size: 0.8em; 
-            color: #888; 
-            margin-bottom: 15px;
+
+        #last-updated {
+            text-align: center;
+            font-size: 0.8em;
+            color: #888;
+            margin-bottom: 8px;
         }
-        
+
         @media (max-width: 767px) {
             #loading { margin-top: 10px; }
-            #last-updated { margin-bottom: 10px; }
+            #last-updated { margin-bottom: 6px; }
         }
-        
+
         .weather-container {
             background: #2b2b2b;
             padding: 15px;
@@ -102,7 +109,7 @@
         }
         .temp { color: #ffbf00; font-weight: bold; font-size: 1.5em; }
         .condition { color: #e0e0e0; flex: 1 1 auto; min-width: 100px; }
-        
+
         .hourly-forecast {
             display: flex;
             gap: 8px;
@@ -125,7 +132,7 @@
         .hour-time { color: #4da6ff; font-weight: bold; display: block; margin-bottom: 3px; }
         .hour-temp { color: #ffbf00; font-weight: bold; display: block; }
         .hour-condition { color: #ddd; font-size: 0.75em; }
-        
+
         @media (max-width: 767px) {
             .weather-container { padding: 12px; margin-bottom: 12px; }
             .weather-info { gap: 10px; font-size: 1em; }
@@ -133,7 +140,7 @@
             .hourly-forecast { gap: 6px; margin-top: 10px; }
             .hour-item { padding: 8px; min-width: 55px; font-size: 0.8em; }
         }
-        
+
         .deviations-container {
             background: #2b2b2b;
             border-left: 4px solid #ff6b6b;
@@ -166,11 +173,23 @@
             font-weight: bold;
             font-size: 1.1em;
             letter-spacing: 2px;
-            margin-bottom: 15px;
+            margin-bottom: 10px;
         }
         .status-banner.ok   { background: #1a3d1a; color: #69f0ae; border: 1px solid #2d7a2d; }
         .status-banner.warn { background: #3d2e00; color: #ffd54f; border: 1px solid #b87d00; }
         .status-banner.crit { background: #3d0d0d; color: #ff6b6b; border: 1px solid #cc2222; }
+
+        /* Stale data warning */
+        #stale-banner {
+            background: #3d2e00;
+            color: #ffd54f;
+            border: 1px solid #b87d00;
+            border-radius: 4px;
+            text-align: center;
+            font-size: 0.85em;
+            padding: 8px 12px;
+            margin-bottom: 10px;
+        }
 
         /* Card status colours via left border */
         .station-card        { border-left: 4px solid #2d7a2d; cursor: pointer; -webkit-user-select: none; user-select: none; }
@@ -197,29 +216,29 @@
         .station-card.expanded .chevron { transform: rotate(180deg); }
 
         /* Next departure summary */
-        .card-next { color: #aaa; font-size: 0.85em; margin-top: 6px; padding-left: 20px; }
-        .card-next .late   { color: #ff6b6b; }
-        .card-next .ontime { color: #69f0ae; }
+        .card-next { color: #aaa; font-size: 0.85em; margin-top: 6px; padding-left: 20px; cursor: pointer; }
+        .card-next.late   .next-status { color: #ff6b6b; }
+        .card-next.ontime .next-status { color: #69f0ae; }
+        .map-hint { color: #555; font-size: 0.85em; }
 
         /* Collapsible table */
         .departures-wrapper { display: none; margin-top: 10px; }
         .station-card.expanded .departures-wrapper { display: block; }
 
-        /* Deviations at top of group (margin-bottom instead of margin-top) */
+        /* Deviations at top of group */
         .deviations-container { margin-top: 0; margin-bottom: 12px; }
 
-        /* Header with settings button */
+        /* Header */
         .header-row {
             position: relative;
             text-align: center;
             margin: 10px 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
-        .header-row h1 { margin: 0; }
+        .header-row h1 { margin: 0; flex: 1; }
         .settings-btn {
-            position: absolute;
-            right: 0;
-            top: 50%;
-            transform: translateY(-50%);
             color: #ffbf00;
             font-size: 1.4em;
             text-decoration: none;
@@ -229,16 +248,118 @@
             background: #2b2b2b;
             line-height: 1;
         }
+
+        /* Connection status dot */
+        .conn-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            margin-right: 8px;
+        }
+        .conn-dot.online  { background: #69f0ae; }
+        .conn-dot.stale   { background: #ffd54f; }
+        .conn-dot.offline { background: #ff6b6b; }
+
+        /* Leave Now button */
+        #leave-now-container { text-align: center; margin-bottom: 12px; }
+        #leave-now-btn {
+            background: #2b2b2b;
+            color: #aaa;
+            border: 1px solid #444;
+            border-radius: 4px;
+            padding: 8px 16px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85em;
+            cursor: pointer;
+            letter-spacing: 1px;
+        }
+        #leave-now-btn.active {
+            background: #3d2e00;
+            color: #ffd54f;
+            border-color: #b87d00;
+        }
+
+        /* Map modal */
+        #map-modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: #1a1a1a;
+            z-index: 2000;
+            flex-direction: column;
+        }
+        #map-header {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 12px;
+            background: #2b2b2b;
+            border-bottom: 1px solid #444;
+            flex-shrink: 0;
+        }
+        #map-dep-info {
+            flex: 1;
+            font-family: 'Courier New', monospace;
+            min-width: 0;
+        }
+        .map-line-badge {
+            display: inline-block;
+            background: #ffbf00;
+            color: #1a1a1a;
+            font-weight: bold;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 1.1em;
+        }
+        .map-dest-text { color: #e0e0e0; font-size: 1em; margin-left: 4px; }
+        .map-time-text { color: #69f0ae; font-size: 0.9em; margin-left: 8px; }
+        .map-station-text { color: #888; font-size: 0.8em; margin-top: 4px; }
+        .map-no-loc { color: #888; font-size: 0.8em; margin-top: 6px; }
+        #map-close-btn {
+            background: none;
+            border: 1px solid #555;
+            color: #e0e0e0;
+            font-size: 1.2em;
+            padding: 4px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            flex-shrink: 0;
+            font-family: 'Courier New', monospace;
+        }
+        #leaflet-map { flex: 1; min-height: 0; }
+
+        /* Leaflet marker override */
+        .station-marker { background: none; border: none; }
+        .marker-pin {
+            width: 44px;
+            height: 44px;
+            background: #ffbf00;
+            border-radius: 50% 50% 50% 0;
+            transform: rotate(-45deg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .marker-pin span {
+            transform: rotate(45deg);
+            color: #1a1a1a;
+            font-weight: bold;
+            font-size: 0.85em;
+            font-family: 'Courier New', monospace;
+        }
     </style>
 </head>
 <body>
 
     <div class="header-row">
+        <span id="conn-dot" class="conn-dot online" title="Connected"></span>
         <h1>DEPARTURES</h1>
         <a href="/config" class="settings-btn" title="Configure stations">&#9881;</a>
     </div>
 
     <div id="commute-status-banner" class="status-banner ok">● CHECKING...</div>
+    <div id="stale-banner" style="display:none"></div>
 
     <div class="weather-container">
         <div class="weather-title">STOCKHOLM, SWEDEN</div>
@@ -248,249 +369,26 @@
         </div>
         <div class="hourly-forecast" id="hourly-forecast"></div>
     </div>
-    
+
     <div id="last-updated"></div>
+
+    <div id="leave-now-container">
+        <button id="leave-now-btn" onclick="toggleLeaveNow()">🚶 LEAVE NOW (3m)</button>
+    </div>
 
     <div id="board" class="board-container"></div>
     <div id="loading">Connecting to SL Network...</div>
 
-    <script>
-        // Debounce function to prevent excessive API calls
-        function debounce(func, delay) {
-            let timeoutId;
-            return function(...args) {
-                clearTimeout(timeoutId);
-                timeoutId = setTimeout(() => func.apply(this, args), delay);
-            };
-        }
-        
-        async function updateWeather() {
-            try {
-                // Stockholm coordinates: 59.3293°N, 18.0686°E
-                const response = await fetch('https://api.open-meteo.com/v1/forecast?latitude=59.3293&longitude=18.0686&current=temperature_2m,weather_code&hourly=temperature_2m,weather_code&temperature_unit=celsius&timezone=auto');
-                const data = await response.json();
-                const current = data.current;
-                const hourly = data.hourly;
-                
-                const tempEl = document.getElementById('temp');
-                const conditionEl = document.getElementById('condition');
-                const hourlyEl = document.getElementById('hourly-forecast');
-                
-                tempEl.textContent = `${current.temperature_2m}°C`;
-                
-                // Map WMO weather codes to descriptions
-                const weatherCodes = {
-                    0: 'Clear',
-                    1: 'Mostly Clear',
-                    2: 'Partly Cloudy',
-                    3: 'Overcast',
-                    45: 'Foggy',
-                    48: 'Foggy',
-                    51: 'Drizzle',
-                    53: 'Drizzle',
-                    55: 'Drizzle',
-                    61: 'Rain',
-                    63: 'Rain',
-                    65: 'Rain',
-                    71: 'Snow',
-                    73: 'Snow',
-                    75: 'Snow',
-                    80: 'Showers',
-                    81: 'Showers',
-                    82: 'Showers',
-                    85: 'Snow Showers',
-                    86: 'Snow Showers',
-                    95: 'Thunderstorm'
-                };
-                
-                const code = current.weather_code;
-                conditionEl.textContent = weatherCodes[code] || 'Unknown';
-                
-                // Display hourly forecast for next 8 hours
-                hourlyEl.innerHTML = '';
-                const now = new Date();
-                const times = hourly.time;
-                const temps = hourly.temperature_2m;
-                const codes = hourly.weather_code;
-                
-                // Find current hour index more efficiently
-                const currentHour = now.getHours();
-                const startIndex = times.findIndex(time => {
-                    const forecastTime = new Date(time);
-                    return forecastTime.getHours() === currentHour;
-                });
-                
-                // Show next 8 hours from current time (use max instead of min for safety)
-                const endIndex = Math.min(startIndex + 8, times.length);
-                for (let i = Math.max(0, startIndex); i < endIndex; i++) {
-                    const time = new Date(times[i]);
-                    const hour = time.getHours().toString().padStart(2, '0');
-                    const temp = Math.round(temps[i]);
-                    const weatherCode = codes[i];
-                    const condition = weatherCodes[weatherCode] || 'Unknown';
-                    
-                    const hourItem = document.createElement('div');
-                    hourItem.className = 'hour-item';
-                    hourItem.innerHTML = `
-                        <span class="hour-time">${hour}:00</span>
-                        <span class="hour-temp">${temp}°</span>
-                        <span class="hour-condition">${condition}</span>
-                    `;
-                    hourlyEl.appendChild(hourItem);
-                }
-            } catch (error) {
-                console.error('Weather fetch error:', error);
-                document.getElementById('condition').textContent = 'Weather unavailable';
-            }
-        }
-        
-        const STATUS_RANK = { ok: 0, warn: 1, crit: 2 };
+    <!-- Map modal -->
+    <div id="map-modal">
+        <div id="map-header">
+            <div id="map-dep-info"></div>
+            <button id="map-close-btn" onclick="closeMap()">✕ CLOSE</button>
+        </div>
+        <div id="leaflet-map"></div>
+    </div>
 
-        function getDelayMinutes(statusText) {
-            if (statusText === 'On Time') return 0;
-            const match = statusText.match(/([+-]?\d+)\s*min/);
-            return match ? parseInt(match[1], 10) : 0;
-        }
-
-        function cardStatusFromDepartures(departures) {
-            let max = 0;
-            for (const dep of departures) {
-                max = Math.max(max, getDelayMinutes(dep.status_text));
-            }
-            if (max > 7) return 'crit';
-            if (max >= 3) return 'warn';
-            return 'ok';
-        }
-
-        function deviationStatus(deviations) {
-            const relevant = (deviations || []).filter(d => !d.station_wide);
-            if (!relevant.length) return 'ok';
-            const hasCrit = relevant.some(d => d.consequence === 'CANCELLED' || d.consequence === 'DIVERSION');
-            return hasCrit ? 'crit' : 'warn';
-        }
-
-        function worstOf(a, b) {
-            return STATUS_RANK[a] >= STATUS_RANK[b] ? a : b;
-        }
-
-        async function updateBoard() {
-            try {
-                const response = await fetch('/api/data');
-                const data = await response.json();
-
-                const board = document.getElementById('board');
-                board.innerHTML = '';
-                document.getElementById('loading').style.display = 'none';
-
-                let overallStatus = 'ok';
-
-                for (const item of data) {
-                    const deviations = item.deviations || [];
-
-                    const groupHeader = document.createElement('h2');
-                    groupHeader.className = 'group-header';
-                    groupHeader.textContent = item.group;
-                    board.appendChild(groupHeader);
-
-                    // Service alerts at the TOP of the group
-                    if (deviations.length > 0) {
-                        overallStatus = worstOf(overallStatus, deviationStatus(deviations));
-
-                        const devContainer = document.createElement('div');
-                        devContainer.className = 'deviations-container';
-
-                        const devHeader = document.createElement('div');
-                        devHeader.className = 'deviation-header';
-                        devHeader.textContent = '⚠ Service Alerts';
-                        devContainer.appendChild(devHeader);
-
-                        deviations.forEach(dev => {
-                            const devItem = document.createElement('div');
-                            devItem.className = `deviation-item ${dev.consequence}`;
-                            devItem.textContent = dev.message;
-                            devContainer.appendChild(devItem);
-                        });
-
-                        board.appendChild(devContainer);
-                    }
-
-                    // Station cards
-                    item.stations.forEach(station => {
-                        const deps = station.departures;
-                        const cardStatus = cardStatusFromDepartures(deps);
-                        overallStatus = worstOf(overallStatus, cardStatus);
-
-                        const firstDep = deps[0];
-                        let nextText, nextClass;
-                        if (firstDep) {
-                            nextText = `Next: ${firstDep.display_time}  ${firstDep.status_text}`;
-                            nextClass = firstDep.status_text === 'On Time' ? 'ontime' : 'late';
-                        } else {
-                            nextText = 'No departures found';
-                            nextClass = '';
-                        }
-
-                        let rows = '';
-                        deps.forEach(dep => {
-                            const sc = dep.status_text === 'On Time' ? 'ontime' : 'late';
-                            rows += `<tr>
-                                <td class="line">${dep.line_num}</td>
-                                <td class="dest">${dep.destination}</td>
-                                <td class="time">${dep.display_time}</td>
-                                <td class="status ${sc}">${dep.status_text}</td>
-                            </tr>`;
-                        });
-
-                        const card = document.createElement('div');
-                        card.className = `station-card ${cardStatus}`;
-                        card.innerHTML = `
-                            <div class="card-header">
-                                <div class="status-dot"></div>
-                                <div class="station-name">${station.station}</div>
-                                <div class="chevron">▼</div>
-                            </div>
-                            <div class="card-next"><span class="${nextClass}">${nextText}</span></div>
-                            <div class="departures-wrapper"><table>${rows}</table></div>
-                        `;
-                        card.addEventListener('click', () => card.classList.toggle('expanded'));
-                        board.appendChild(card);
-                    });
-                }
-
-                // Update the top banner
-                const bannerLabels = { ok: '● ALL CLEAR', warn: '● MINOR DISRUPTION', crit: '● SIGNIFICANT DELAYS' };
-                const banner = document.getElementById('commute-status-banner');
-                banner.textContent = bannerLabels[overallStatus];
-                banner.className = `status-banner ${overallStatus}`;
-
-                const now = new Date();
-                document.getElementById('last-updated').textContent = `Last Updated: ${now.toLocaleTimeString()}`;
-
-            } catch (error) {
-                console.error("Fetch error:", error);
-            }
-        }
-
-        // Create debounced versions of update functions
-        const debouncedUpdateWeather = debounce(updateWeather, 1000);
-        const debouncedUpdateBoard = debounce(updateBoard, 1000);
-        
-        // Update immediately
-        updateWeather();
-        updateBoard();
-        
-        // Set up intervals with optimized timing
-        // Weather: 10 minutes
-        setInterval(updateWeather, 600000);
-        // Transit: 20 seconds
-        setInterval(updateBoard, 20000);
-        
-        // Register service worker for offline caching support
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/sw.js').catch(() => {
-                // Service worker registration failed, but app will still work
-            });
-        }
-    </script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+    <script src="/static/app.js"></script>
 </body>
 </html>
