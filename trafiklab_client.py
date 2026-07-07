@@ -795,8 +795,11 @@ def get_vehicle_positions(line: str, destination: Optional[str], settings: dict,
         # stop_times.txt's stop_headsign (the vehicle's own destination sign text) is
         # the reliable source; only fall back to trip_headsign if that's unavailable.
         headsign = trips_by_id.get(vp['trip_id'], {}).get('trip_headsign', '') or _lookup_trip_headsign(vp['trip_id']) or ''
-        if dest_lower and headsign and dest_lower not in headsign.lower():
-            continue
+        # Tag direction rather than dropping mismatches — the map wants to show
+        # opposite-direction vehicles too (colored differently), not hide them.
+        same_direction = None
+        if dest_lower and headsign:
+            same_direction = dest_lower in headsign.lower()
 
         eta_iso = None
         if site_stop_ids:
@@ -808,10 +811,10 @@ def get_vehicle_positions(line: str, destination: Optional[str], settings: dict,
         results.append({
             'lat': vp['lat'],
             'lon': vp['lon'],
-            'bearing': vp['bearing'],
             'vehicle_id': vp['vehicle_id'],
             'updated_at': vp['timestamp'],
             'destination': headsign or None,
+            'same_direction': same_direction,
             'eta_iso': eta_iso,
         })
     return results

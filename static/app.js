@@ -6,7 +6,7 @@ let leafletMap = null;
 let countdownTimerId = null;
 let staleCheckTimerId = null;
 let vehiclePollTimerId = null;
-let vehicleMarkersById = new Map(); // key -> {marker, lat, lon, bearing}
+let vehicleMarkersById = new Map(); // key -> {marker, lat, lon, sameDirection}
 let routePolyline = null;
 let stationMarker = null;
 let hasFitBounds = false;
@@ -310,7 +310,6 @@ function escapeAttr(str) {
 
 // ── Map ────────────────────────────────────────────────────────────────────────
 const MAP_LIVE_GRACE_MS = 25000; // ~2.5 missed 10s polls before we call it "stalled"
-const MIN_BEARING_DISPLACEMENT_DEG = 0.00001; // ~1m — below this, GPS jitter makes bearing meaningless
 
 function openMap(siteId, stationName, lineNum, destination, expectedIso) {
     resetMapState();
@@ -390,36 +389,15 @@ function vehicleTooltipHtml(destination, etaIso) {
     return `<span class="vehicle-label-dest">→ ${destination || ''}</span><span class="vehicle-label-eta">${etaText}</span>`;
 }
 
-function vehicleIcon(bearingDeg) {
-    if (bearingDeg == null) {
-        return L.divIcon({
-            className: 'vehicle-marker',
-            html: '<div class="vehicle-dot"></div>',
-            iconSize: [18, 18],
-            iconAnchor: [9, 9]
-        });
-    }
+// sameDirection: true (heading your way) | false (opposite) | null/undefined (unknown)
+function vehicleIcon(sameDirection) {
+    const dirClass = sameDirection === true ? 'dir-same' : sameDirection === false ? 'dir-opposite' : 'dir-unknown';
     return L.divIcon({
         className: 'vehicle-marker',
-        html: `<div class="vehicle-arrow" style="transform: rotate(${bearingDeg}deg);"></div>`,
+        html: `<div class="vehicle-dot ${dirClass}"></div>`,
         iconSize: [18, 18],
         iconAnchor: [9, 9]
     });
-}
-
-// Initial bearing (forward azimuth, degrees) from point 1 to point 2.
-function computeBearing(lat1, lon1, lat2, lon2) {
-    if (Math.abs(lat2 - lat1) < MIN_BEARING_DISPLACEMENT_DEG && Math.abs(lon2 - lon1) < MIN_BEARING_DISPLACEMENT_DEG) {
-        return null;
-    }
-    const toRad = d => d * Math.PI / 180;
-    const toDeg = r => r * 180 / Math.PI;
-    const phi1 = toRad(lat1), phi2 = toRad(lat2), dLambda = toRad(lon2 - lon1);
-    const theta = Math.atan2(
-        Math.sin(dLambda) * Math.cos(phi2),
-        Math.cos(phi1) * Math.sin(phi2) - Math.sin(phi1) * Math.cos(phi2) * Math.cos(dLambda)
-    );
-    return (toDeg(theta) + 360) % 360;
 }
 
 function fitMapToMarkers() {
@@ -486,26 +464,22 @@ function pollVehicles(lineNum, destination, siteId, stationName) {
 
                 if (key == null) {
                     // Unkeyable — can't track identity across polls, render a plain one-off marker.
-                    L.marker([v.lat, v.lon], { icon: vehicleIcon(v.bearing ?? null) }).addTo(leafletMap);
+                    L.marker([v.lat, v.lon], { icon: vehicleIcon(v.same_direction ?? null) }).addTo(leafletMap);
                     return;
                 }
 
                 seenKeys.add(key);
                 const existing = vehicleMarkersById.get(key);
                 if (existing) {
-                    let bearing = v.bearing;
-                    if (bearing == null) {
-                        bearing = computeBearing(existing.lat, existing.lon, v.lat, v.lon);
-                    }
-                    if (bearing == null) bearing = existing.bearing;
+                    const sameDirection = v.same_direction ?? null;
 
                     existing.marker.setLatLng([v.lat, v.lon]);
-                    if (bearing !== existing.bearing) {
-                        existing.marker.setIcon(vehicleIcon(bearing));
+                    if (sameDirection !== existing.sameDirection) {
+                        existing.marker.setIcon(vehicleIcon(sameDirection));
                     }
                     existing.lat = v.lat;
                     existing.lon = v.lon;
-                    existing.bearing = bearing;
+                    existing.sameDirection = sameDirection;
 
                     if (v.destination && (v.destination !== existing.destination || v.eta_iso !== existing.etaIso)) {
                         const html = vehicleTooltipHtml(v.destination, v.eta_iso);
@@ -518,14 +492,14 @@ function pollVehicles(lineNum, destination, siteId, stationName) {
                     existing.destination = v.destination ?? null;
                     existing.etaIso = v.eta_iso ?? null;
                 } else {
-                    const marker = L.marker([v.lat, v.lon], { icon: vehicleIcon(v.bearing ?? null) }).addTo(leafletMap);
+                    const marker = L.marker([v.lat, v.lon], { icon: vehicleIcon(v.same_direction ?? null) }).addTo(leafletMap);
                     if (v.destination) {
                         marker.bindTooltip(vehicleTooltipHtml(v.destination, v.eta_iso), {
                             permanent: true, direction: 'right', className: 'vehicle-label', offset: [10, 0]
                         });
                     }
                     vehicleMarkersById.set(key, {
-                        marker, lat: v.lat, lon: v.lon, bearing: v.bearing ?? null,
+                        marker, lat: v.lat, lon: v.lon, sameDirection: v.same_direction ?? null,
                         destination: v.destination ?? null, etaIso: v.eta_iso ?? null
                     });
                 }
