@@ -525,6 +525,39 @@ def _lookup_trip_headsign(trip_id: str) -> Optional[str]:
         return None
 
 
+def _lookup_trip_headsigns(trip_ids) -> dict:
+    """Representative destination string per trip_id (see _lookup_trip_headsign for
+    why stop_headsign rather than trip_headsign), for callers that need headsigns
+    for many trips at once — e.g. route shape selection, which considers every
+    trip on a route rather than one trip at a time. A single query per chunk
+    instead of one round-trip per trip. Always fails open — {} on any problem.
+    """
+    trip_ids = [t for t in trip_ids if t]
+    if not trip_ids or not _stop_times_db_ready():
+        return {}
+    try:
+        conn = sqlite3.connect(f'file:{_STOP_TIMES_DB_FILE}?mode=ro', uri=True, timeout=2)
+        try:
+            result = {}
+            # Chunk to stay under SQLite's default host-parameter limit (~999).
+            for i in range(0, len(trip_ids), 500):
+                chunk = trip_ids[i:i + 500]
+                placeholders = ','.join('?' * len(chunk))
+                rows = conn.execute(
+                    f'SELECT trip_id, stop_headsign FROM stop_times '
+                    f'WHERE trip_id IN ({placeholders}) AND stop_headsign IS NOT NULL',
+                    chunk,
+                ).fetchall()
+                for tid, headsign in rows:
+                    result.setdefault(tid, headsign)
+            return result
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        logger.warning(f"bulk stop_headsign lookup failed: {e}")
+        return {}
+
+
 def _gtfs_seconds_to_utc_nearest(seconds: int, now_utc: datetime) -> datetime:
     """Convert GTFS 'seconds since midnight' (local Stockholm time, can exceed
     24:00:00 for post-midnight trips) to an absolute UTC datetime.
@@ -802,13 +835,21 @@ def get_route_shape(line: str, destination: Optional[str], settings: dict) -> li
     trips_by_id = _static_cache['trips_by_id']
     dest_lower = (destination or '').lower()
 
+    candidate_trip_ids = [
+        tid for tid, trip in trips_by_id.items()
+        if trip.get('route_id') in route_ids and trip.get('shape_id')
+    ]
+    # trips.txt's trip_headsign is unreliable on SL's feed (frequently empty, same
+    # issue as get_vehicle_positions) — fall back to stop_times.txt's stop_headsign,
+    # bulk-fetched once for every candidate trip rather than one query per trip.
+    fallback_headsigns = _lookup_trip_headsigns(candidate_trip_ids) if dest_lower else {}
+
     def matching_shape_ids(require_destination_match):
         counts = Counter()
-        for trip in trips_by_id.values():
-            if trip.get('route_id') not in route_ids or not trip.get('shape_id'):
-                continue
+        for tid in candidate_trip_ids:
+            trip = trips_by_id[tid]
             if require_destination_match and dest_lower:
-                headsign = (trip.get('trip_headsign') or '').lower()
+                headsign = (trip.get('trip_headsign') or fallback_headsigns.get(tid) or '').lower()
                 if not headsign or dest_lower not in headsign:
                     continue
             counts[trip['shape_id']] += 1
