@@ -106,7 +106,12 @@ function minutesUntil(isoStr) {
 }
 
 function updateCountdowns() {
-    if (leafletMap) updateMapLiveStatus();
+    if (leafletMap) {
+        updateMapLiveStatus();
+        vehicleMarkersById.forEach(entry => {
+            if (entry.destination) entry.marker.setTooltipContent(vehicleTooltipHtml(entry.destination, entry.etaIso));
+        });
+    }
     document.querySelectorAll('.dep-time[data-expected-iso]').forEach(el => {
         const mins = minutesUntil(el.dataset.expectedIso);
         if (mins === null) return;
@@ -347,12 +352,13 @@ function openMap(siteId, stationName, lineNum, destination, expectedIso) {
             if (loc.error) throw new Error(loc.error);
             const icon = L.divIcon({
                 className: 'station-marker',
-                html: `<div class="marker-pin"><span>${lineNum}</span></div>`,
+                html: `<div class="marker-pin"></div>`,
                 iconSize: [44, 44],
                 iconAnchor: [22, 44]
             });
             stationMarker = L.marker([loc.lat, loc.lon], { icon })
                 .addTo(leafletMap)
+                .bindTooltip(stationName, { permanent: true, direction: 'top', className: 'station-label', offset: [0, -40] })
                 .bindPopup(`<b>${stationName}</b><br>Line ${lineNum} → ${destination}<br>${timeStr}`)
                 .openPopup();
             fitMapToMarkers();
@@ -368,14 +374,20 @@ function openMap(siteId, stationName, lineNum, destination, expectedIso) {
         .then(data => {
             if (routePolyline) { routePolyline.remove(); routePolyline = null; }
             if (data.points && data.points.length > 1 && leafletMap) {
-                routePolyline = L.polyline(data.points, { color: '#ffbf00', weight: 4, opacity: 0.35 }).addTo(leafletMap);
+                routePolyline = L.polyline(data.points, { color: '#ffffff', weight: 2, opacity: 0.7 }).addTo(leafletMap);
             }
         })
         .catch(() => { /* best-effort — no route line drawn */ });
 
     // Live vehicle positions for this line/direction
-    pollVehicles(lineNum, destination);
-    vehiclePollTimerId = setInterval(() => pollVehicles(lineNum, destination), 10000);
+    pollVehicles(lineNum, destination, siteId, stationName);
+    vehiclePollTimerId = setInterval(() => pollVehicles(lineNum, destination, siteId, stationName), 10000);
+}
+
+function vehicleTooltipHtml(destination, etaIso) {
+    const mins = etaIso ? minutesUntil(etaIso) : null;
+    const etaText = mins === null ? '' : mins <= 0 ? ' · arriving' : ` · ${mins} min`;
+    return `<span class="vehicle-label-dest">→ ${destination || ''}</span><span class="vehicle-label-eta">${etaText}</span>`;
 }
 
 function vehicleIcon(bearingDeg) {
@@ -443,9 +455,9 @@ function updateMapLiveStatus() {
     }
 }
 
-function pollVehicles(lineNum, destination) {
+function pollVehicles(lineNum, destination, siteId, stationName) {
     if (!leafletMap) return;
-    fetch(`/api/lines/${encodeURIComponent(lineNum)}/vehicles?direction=${encodeURIComponent(destination)}`)
+    fetch(`/api/lines/${encodeURIComponent(lineNum)}/vehicles?direction=${encodeURIComponent(destination)}&site_id=${encodeURIComponent(siteId)}&station_name=${encodeURIComponent(stationName)}`)
         .then(r => r.json())
         .then(data => {
             if (!data.available) {
@@ -494,9 +506,28 @@ function pollVehicles(lineNum, destination) {
                     existing.lat = v.lat;
                     existing.lon = v.lon;
                     existing.bearing = bearing;
+
+                    if (v.destination && (v.destination !== existing.destination || v.eta_iso !== existing.etaIso)) {
+                        const html = vehicleTooltipHtml(v.destination, v.eta_iso);
+                        if (existing.marker.getTooltip()) {
+                            existing.marker.setTooltipContent(html);
+                        } else {
+                            existing.marker.bindTooltip(html, { permanent: true, direction: 'right', className: 'vehicle-label', offset: [10, 0] });
+                        }
+                    }
+                    existing.destination = v.destination ?? null;
+                    existing.etaIso = v.eta_iso ?? null;
                 } else {
                     const marker = L.marker([v.lat, v.lon], { icon: vehicleIcon(v.bearing ?? null) }).addTo(leafletMap);
-                    vehicleMarkersById.set(key, { marker, lat: v.lat, lon: v.lon, bearing: v.bearing ?? null });
+                    if (v.destination) {
+                        marker.bindTooltip(vehicleTooltipHtml(v.destination, v.eta_iso), {
+                            permanent: true, direction: 'right', className: 'vehicle-label', offset: [10, 0]
+                        });
+                    }
+                    vehicleMarkersById.set(key, {
+                        marker, lat: v.lat, lon: v.lon, bearing: v.bearing ?? null,
+                        destination: v.destination ?? null, etaIso: v.eta_iso ?? null
+                    });
                 }
             });
 

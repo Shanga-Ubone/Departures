@@ -422,9 +422,11 @@ def get_site_location(site_id: int):
 def get_line_vehicles(line):
     """Live vehicle positions for a line/direction, for the map. Best-effort — always 200."""
     destination = request.args.get('direction', '')
+    site_id = request.args.get('site_id')
+    station_name = request.args.get('station_name')
     config, _ = get_config()
     try:
-        vehicles = trafiklab_client.get_vehicle_positions(line, destination, config)
+        vehicles = trafiklab_client.get_vehicle_positions(line, destination, config, site_id=site_id, station_name=station_name)
     except Exception as e:
         logger.warning(f"Vehicle position lookup failed for line {line}: {e}")
         vehicles = []

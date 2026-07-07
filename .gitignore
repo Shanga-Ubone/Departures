@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 .env
 .trafiklab_static_cache.json
+.trafiklab_stop_times.sqlite
+.trafiklab_stop_times.sqlite.tmp

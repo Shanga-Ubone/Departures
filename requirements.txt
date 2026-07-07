@@ -3,3 +3,4 @@ requests
 gunicorn
 python-dotenv
 gtfs-realtime-bindings
+tzdata

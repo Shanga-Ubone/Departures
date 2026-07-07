@@ -344,16 +344,6 @@
             background: #ffbf00;
             border-radius: 50% 50% 50% 0;
             transform: rotate(-45deg);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .marker-pin span {
-            transform: rotate(45deg);
-            color: #1a1a1a;
-            font-weight: bold;
-            font-size: 0.85em;
-            font-family: 'Courier New', monospace;
         }
         .vehicle-marker { background: none; border: none; }
         .vehicle-dot {
@@ -375,6 +365,36 @@
         .leaflet-marker-icon.vehicle-marker {
             transition: transform 0.9s linear;
         }
+
+        /* Vehicle destination + ETA label */
+        .leaflet-tooltip.vehicle-label {
+            background: rgba(26, 26, 26, 0.85) !important;
+            border: 1px solid #444 !important;
+            color: #e0e0e0 !important;
+            font-family: 'Courier New', monospace;
+            font-size: 0.72em;
+            padding: 2px 6px;
+            border-radius: 3px;
+            white-space: nowrap;
+            box-shadow: none !important;
+        }
+        .leaflet-tooltip-right.vehicle-label::before { border-right-color: rgba(26, 26, 26, 0.85) !important; }
+        .vehicle-label-eta { color: #69f0ae; margin-left: 4px; }
+
+        /* Station name label */
+        .leaflet-tooltip.station-label {
+            background: rgba(43, 43, 43, 0.9) !important;
+            border: 1px solid #ffbf00 !important;
+            color: #ffbf00 !important;
+            font-family: 'Courier New', monospace;
+            font-weight: bold;
+            font-size: 0.8em;
+            padding: 3px 8px;
+            border-radius: 3px;
+            white-space: nowrap;
+            box-shadow: none !important;
+        }
+        .leaflet-tooltip-top.station-label::before { border-top-color: rgba(43, 43, 43, 0.9) !important; }
 
         /* Leaflet default UI chrome — restyled for the dark basemap */
         .leaflet-control-zoom a {
