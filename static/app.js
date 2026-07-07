@@ -5,6 +5,8 @@ let walkMinutes = parseInt(localStorage.getItem('walkMinutes') || '3', 10);
 let leafletMap = null;
 let countdownTimerId = null;
 let staleCheckTimerId = null;
+let vehiclePollTimerId = null;
+let vehicleMarkers = [];
 
 // ── Weather ────────────────────────────────────────────────────────────────────
 function debounce(func, delay) {
@@ -227,6 +229,10 @@ async function updateBoard() {
                         ? `${mins} min`
                         : dep.display_time;
                     const imminent = mins !== null && mins <= 2 && mins >= 0 ? ' imminent' : '';
+                    const gtfsTitle = dep.gtfs_alert
+                        ? dep.gtfs_alert.header
+                        : (dep.gtfs_cross_check === 'delay_diff' ? 'Trafiklab real-time data disagrees with this estimate' : '');
+                    const gtfsFlag = gtfsTitle ? `<span class="gtfs-flag" title="${escapeAttr(gtfsTitle)}">&#8224;</span>` : '';
                     rows += `<tr class="dep-row"
                         data-site-id="${siteId}"
                         data-station-name="${escapeAttr(station.station)}"
@@ -236,7 +242,7 @@ async function updateBoard() {
                         <td class="line">${dep.line_num}</td>
                         <td class="dest">${dep.destination}</td>
                         <td class="dep-time time${imminent}" data-expected-iso="${dep.expected_iso}" data-clock-time="${dep.display_time}">${timeDisplay}</td>
-                        <td class="status ${sc}">${dep.status_text}</td>
+                        <td class="status ${sc}">${dep.status_text}${gtfsFlag}</td>
                         <td class="map-tap">&#x1F4CD;</td>
                     </tr>`;
                 });
@@ -309,7 +315,7 @@ function openMap(siteId, stationName, lineNum, destination, expectedIso) {
     }).addTo(leafletMap);
 
     // Fetch station coordinates
-    fetch(`/api/sites/${siteId}/location`)
+    fetch(`/api/sites/${siteId}/location?name=${encodeURIComponent(stationName)}`)
         .then(r => r.ok ? r.json() : Promise.reject('not found'))
         .then(loc => {
             if (loc.error) throw new Error(loc.error);
@@ -329,11 +335,58 @@ function openMap(siteId, stationName, lineNum, destination, expectedIso) {
             const info = document.getElementById('map-dep-info');
             info.innerHTML += '<div class="map-no-loc">⚠ Station coordinates not yet available — check back after first data refresh</div>';
         });
+
+    // Live vehicle positions for this line/direction
+    pollVehicles(lineNum, destination);
+    vehiclePollTimerId = setInterval(() => pollVehicles(lineNum, destination), 10000);
+}
+
+function vehicleIcon() {
+    return L.divIcon({
+        className: 'vehicle-marker',
+        html: '<div class="vehicle-dot"></div>',
+        iconSize: [18, 18],
+        iconAnchor: [9, 9]
+    });
+}
+
+function pollVehicles(lineNum, destination) {
+    if (!leafletMap) return;
+    fetch(`/api/lines/${encodeURIComponent(lineNum)}/vehicles?direction=${encodeURIComponent(destination)}`)
+        .then(r => r.json())
+        .then(data => {
+            vehicleMarkers.forEach(m => m.remove());
+            vehicleMarkers = [];
+
+            const info = document.getElementById('map-dep-info');
+            const existingNote = info.querySelector('.map-no-vehicles');
+            if (existingNote) existingNote.remove();
+
+            const vehicles = data.vehicles || [];
+            if (data.available && vehicles.length === 0) {
+                info.insertAdjacentHTML('beforeend',
+                    '<div class="map-no-vehicles">No live vehicles currently reported for this line</div>');
+            }
+
+            vehicles.forEach(v => {
+                if (v.lat == null || v.lon == null || !leafletMap) return;
+                vehicleMarkers.push(
+                    L.marker([v.lat, v.lon], { icon: vehicleIcon() }).addTo(leafletMap)
+                );
+            });
+        })
+        .catch(() => { /* best-effort — leave existing markers/state untouched on transient failure */ });
 }
 
 function closeMap() {
     document.getElementById('map-modal').style.display = 'none';
     document.body.style.overflow = '';
+    if (vehiclePollTimerId) {
+        clearInterval(vehiclePollTimerId);
+        vehiclePollTimerId = null;
+    }
+    vehicleMarkers.forEach(m => m.remove());
+    vehicleMarkers = [];
     if (leafletMap) {
         leafletMap.remove();
         leafletMap = null;

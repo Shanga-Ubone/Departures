@@ -315,7 +315,14 @@
         .map-dest-text { color: #e0e0e0; font-size: 1em; margin-left: 4px; }
         .map-time-text { color: #69f0ae; font-size: 0.9em; margin-left: 8px; }
         .map-station-text { color: #888; font-size: 0.8em; margin-top: 4px; }
+        .gtfs-flag {
+            margin-left: 4px;
+            color: #ffbf00;
+            cursor: help;
+            font-size: 0.85em;
+        }
         .map-no-loc { color: #888; font-size: 0.8em; margin-top: 6px; }
+        .map-no-vehicles { color: #888; font-size: 0.8em; margin-top: 6px; }
         #map-close-btn {
             background: none;
             border: 1px solid #555;
@@ -347,6 +354,15 @@
             font-weight: bold;
             font-size: 0.85em;
             font-family: 'Courier New', monospace;
+        }
+        .vehicle-marker { background: none; border: none; }
+        .vehicle-dot {
+            width: 16px;
+            height: 16px;
+            background: #69f0ae;
+            border: 2px solid #1a1a1a;
+            border-radius: 50%;
+            box-shadow: 0 0 6px rgba(105, 240, 174, 0.8);
         }
     </style>
 </head>

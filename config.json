@@ -22,5 +22,10 @@
   "api_base_url": "https://transport.integration.sl.se/v1/sites",
   "max_departures_per_station": 10,
   "cache_ttl_seconds": 8,
-  "group_order": ["TO WORK", "FROM WORK", "OTHER"]
+  "group_order": ["TO WORK", "FROM WORK", "OTHER"],
+  "trafiklab_operator_id": "sl",
+  "trafiklab_primary_agency_name": "AB Storstockholms Lokaltrafik",
+  "trafiklab_static_refresh_hours": 168,
+  "trafiklab_realtime_cache_ttl_seconds": 15,
+  "trafiklab_vehicle_poll_seconds": 10
 }
