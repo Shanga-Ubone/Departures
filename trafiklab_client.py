@@ -142,14 +142,24 @@ def _build_stop_times_db(zf, dest_path: str) -> bool:
     """Stream stop_times.txt into a small on-disk SQLite index. Never raises.
 
     Writes to a temp file and atomically renames into place so concurrent
-    readers never observe a half-built database.
+    readers never observe a half-built database. Guarded by an exclusive
+    lock file so that multiple gunicorn worker processes (each with their
+    own in-memory state) don't all redundantly download+build at once —
+    whichever worker gets there first wins; the rest skip silently.
     """
     if 'stop_times.txt' not in zf.namelist():
         return False
 
     tmp_path = dest_path + '.tmp'
+    lock_path = dest_path + '.lock'
     conn = None
+    lock_fd = None
     try:
+        try:
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            return False  # another process is already building this
+
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
         conn = sqlite3.connect(tmp_path)
@@ -199,6 +209,68 @@ def _build_stop_times_db(zf, dest_path: str) -> bool:
             except Exception:
                 pass
         return False
+    finally:
+        if lock_fd is not None:
+            try:
+                os.close(lock_fd)
+            except Exception:
+                pass
+            try:
+                os.remove(lock_path)
+            except Exception:
+                pass
+
+
+_stop_times_build_lock = threading.Lock()
+_stop_times_build_in_progress = False
+
+
+def _kick_off_stop_times_build(settings: dict, zip_bytes: Optional[bytes] = None) -> None:
+    """Build the stop_times SQLite index in a background thread — never blocks
+    the caller. ETA lookups fail open (None/[]) until the index appears, which
+    is far preferable to holding an HTTP request open for the ~30s+ it takes
+    to download and stream-parse the full regional stop_times.txt.
+
+    Pass zip_bytes when the caller already has a freshly-downloaded static zip
+    in hand (the normal _ensure_static_data refresh path) to avoid a second,
+    redundant download against the rate-limited static API; omitted, the
+    background job fetches its own copy (the one-time backfill path, where
+    the rest of static data was already fresh and no download just happened).
+
+    Deduped in-process via a flag (so a burst of requests before the first
+    background build finishes doesn't spawn a pile of redundant threads); the
+    file lock inside _build_stop_times_db separately dedupes across the
+    multiple OS processes a production WSGI server typically runs.
+    """
+    global _stop_times_build_in_progress
+    with _stop_times_build_lock:
+        if _stop_times_build_in_progress:
+            return
+        _stop_times_build_in_progress = True
+
+    def _job():
+        global _stop_times_build_in_progress
+        try:
+            data = zip_bytes
+            if data is None:
+                operator = settings.get('trafiklab_operator_id', 'sl')
+                url = f"{BASE_URL}/gtfs/{operator}/{operator}.zip"
+                resp = fetch_with_retry(
+                    url,
+                    headers={'Accept-Encoding': 'gzip, deflate'},
+                    params={'key': TRAFIKLAB_STATIC_API_KEY},
+                    timeout=30,
+                )
+                data = resp.content
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                _build_stop_times_db(zf, _STOP_TIMES_DB_FILE)
+        except Exception as e:
+            logger.warning(f"Background stop_times index build failed: {e}")
+        finally:
+            with _stop_times_build_lock:
+                _stop_times_build_in_progress = False
+
+    threading.Thread(target=_job, daemon=True, name='stop_times_index_build').start()
 
 
 def _ensure_static_data(settings: dict) -> bool:
@@ -206,22 +278,34 @@ def _ensure_static_data(settings: dict) -> bool:
 
     Checks, in order: fresh in-memory data -> fresh on-disk data (no network call) ->
     network fetch (persisted to disk on success) -> stale in-memory/disk data as a last resort.
+
+    The stop_times SQLite index is treated as a lagging, best-effort sidecar
+    here, never a blocking precondition: if it's missing, a background build
+    is kicked off (see _kick_off_stop_times_build) and this function returns
+    as soon as the rest of the static data (stops/routes/trips/shapes) is
+    usable, exactly as it did before that index existed.
     """
     if not is_static_enabled():
         return False
 
     refresh_hours = settings.get('trafiklab_static_refresh_hours', 168)  # default: weekly, well within the 60/30d cap
-    if _is_fresh(_static_cache['fetched_at'], refresh_hours) and _stop_times_db_ready():
+
+    def _ready() -> bool:
+        if not _stop_times_db_ready():
+            _kick_off_stop_times_build(settings)
         return True
 
+    if _is_fresh(_static_cache['fetched_at'], refresh_hours):
+        return _ready()
+
     if _static_cache['fetched_at'] is None and _load_disk_cache():
-        if _is_fresh(_static_cache['fetched_at'], refresh_hours) and _stop_times_db_ready():
-            return True
+        if _is_fresh(_static_cache['fetched_at'], refresh_hours):
+            return _ready()
 
     with _static_lock:
         # Re-check after acquiring the lock in case another request already refreshed it.
-        if _is_fresh(_static_cache['fetched_at'], refresh_hours) and _stop_times_db_ready():
-            return True
+        if _is_fresh(_static_cache['fetched_at'], refresh_hours):
+            return _ready()
 
         operator = settings.get('trafiklab_operator_id', 'sl')
         url = f"{BASE_URL}/gtfs/{operator}/{operator}.zip"
@@ -311,10 +395,6 @@ def _ensure_static_data(settings: dict) -> bool:
                             pts.sort(key=lambda p: p[0])  # shape_pt_sequence order, not file order
                             shapes_by_id[shape_id] = [[lat, lon] for _, lat, lon in pts]
 
-                # stop_times.txt is far too large to hold in memory (see comment at
-                # _STOP_TIMES_DB_FILE) — streamed straight into the on-disk index instead.
-                _build_stop_times_db(zf, _STOP_TIMES_DB_FILE)
-
             _static_cache['stops_by_id'] = stops_by_id
             _static_cache['stops_by_parent'] = stops_by_parent
             _static_cache['stops_by_name'] = stops_by_name
@@ -327,6 +407,10 @@ def _ensure_static_data(settings: dict) -> bool:
                 "Loaded Trafiklab static GTFS: %d stops, %d routes, %d trips, %d shapes",
                 len(stops_by_id), len(routes_by_short_name), len(trips_by_id), len(shapes_by_id)
             )
+            if not _stop_times_db_ready():
+                # Reuse the zip bytes we already have in hand — avoids a second,
+                # redundant download against the rate-limited static API.
+                _kick_off_stop_times_build(settings, zip_bytes=resp.content)
             return True
         except Exception as e:
             logger.warning(f"Failed to refresh Trafiklab static GTFS data: {e}")
@@ -335,7 +419,7 @@ def _ensure_static_data(settings: dict) -> bool:
             # slightly-stale schedule data beats none, and we don't want a rate-limited
             # or transient failure to spend towards yet another retry.
             if _static_cache['fetched_at']:
-                return True
+                return _ready()
             return _load_disk_cache()
 
 
