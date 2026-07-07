@@ -9,10 +9,14 @@ from dataclasses import dataclass
 from typing import Optional, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# Must run before importing trafiklab_client — it reads its API keys from the
+# environment at import time, so .env has to be loaded first or the keys are
+# silently None for the lifetime of the process (only masked in production,
+# where the host injects real env vars before the process even starts).
+load_dotenv()
+
 from http_utils import fetch_with_retry
 import trafiklab_client
-
-load_dotenv()
 
 app = Flask(__name__)
 
@@ -425,6 +429,19 @@ def get_line_vehicles(line):
         logger.warning(f"Vehicle position lookup failed for line {line}: {e}")
         vehicles = []
     return jsonify({'vehicles': vehicles, 'available': trafiklab_client.is_enabled()})
+
+
+@app.route('/api/lines/<line>/shape')
+def get_line_shape(line):
+    """Route polyline for a line/direction, for the map. Best-effort — always 200."""
+    destination = request.args.get('direction', '')
+    config, _ = get_config()
+    try:
+        points = trafiklab_client.get_route_shape(line, destination, config)
+    except Exception as e:
+        logger.warning(f"Route shape lookup failed for line {line}: {e}")
+        points = []
+    return jsonify({'points': points, 'available': trafiklab_client.is_enabled()})
 
 
 @app.route('/config')

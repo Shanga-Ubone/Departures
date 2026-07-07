@@ -364,6 +364,107 @@
             border-radius: 50%;
             box-shadow: 0 0 6px rgba(105, 240, 174, 0.8);
         }
+        .vehicle-arrow {
+            width: 0;
+            height: 0;
+            border-left: 7px solid transparent;
+            border-right: 7px solid transparent;
+            border-bottom: 14px solid #69f0ae;
+            filter: drop-shadow(0 0 4px rgba(105, 240, 174, 0.8));
+        }
+        .leaflet-marker-icon.vehicle-marker {
+            transition: transform 0.9s linear;
+        }
+
+        /* Leaflet default UI chrome — restyled for the dark basemap */
+        .leaflet-control-zoom a {
+            background: #2b2b2b !important;
+            color: #ffbf00 !important;
+            border-color: #444 !important;
+        }
+        .leaflet-control-zoom a:hover {
+            background: #3a3a3a !important;
+            color: #ffd54f !important;
+        }
+        .leaflet-control-attribution {
+            background: rgba(26, 26, 26, 0.8) !important;
+            color: #888 !important;
+        }
+        .leaflet-control-attribution a {
+            color: #4da6ff !important;
+        }
+        .leaflet-popup-content-wrapper {
+            background: #2b2b2b !important;
+            color: #e0e0e0 !important;
+        }
+        .leaflet-popup-tip {
+            background: #2b2b2b !important;
+        }
+        .leaflet-popup-close-button {
+            color: #aaa !important;
+        }
+        .leaflet-popup-close-button:hover {
+            color: #ffbf00 !important;
+        }
+
+        /* Map live status indicator */
+        #map-live-status {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.8em;
+            color: #888;
+            flex-shrink: 0;
+            white-space: nowrap;
+            align-self: center;
+        }
+        #map-live-status .conn-dot { margin-right: 0; }
+        #map-live-status .conn-dot.online {
+            animation: live-pulse 1.6s ease-in-out infinite;
+        }
+        @keyframes live-pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        /* Map loading spinner */
+        #map-loading-spinner {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            color: #888;
+            font-size: 0.9em;
+            background: rgba(26, 26, 26, 0.5);
+            pointer-events: none;
+        }
+        #map-loading-spinner .spinner {
+            width: 28px;
+            height: 28px;
+            border: 3px solid #444;
+            border-top-color: #ffbf00;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        #map-recenter-btn {
+            background: none;
+            border: 1px solid #555;
+            color: #e0e0e0;
+            font-size: 1em;
+            padding: 4px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            flex-shrink: 0;
+            font-family: 'Courier New', monospace;
+        }
+        #leaflet-map-wrap { position: relative; flex: 1; min-height: 0; display: flex; }
     </style>
 </head>
 <body>
@@ -399,9 +500,20 @@
     <div id="map-modal">
         <div id="map-header">
             <div id="map-dep-info"></div>
+            <div id="map-live-status">
+                <span id="map-live-dot" class="conn-dot"></span>
+                <span id="map-live-label"></span>
+            </div>
+            <button id="map-recenter-btn" onclick="fitMapToMarkers()" title="Recenter map">&#8982;</button>
             <button id="map-close-btn" onclick="closeMap()">✕ CLOSE</button>
         </div>
-        <div id="leaflet-map"></div>
+        <div id="leaflet-map-wrap">
+            <div id="leaflet-map"></div>
+            <div id="map-loading-spinner" style="display:none;">
+                <div class="spinner"></div>
+                <div>Loading vehicles...</div>
+            </div>
+        </div>
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>

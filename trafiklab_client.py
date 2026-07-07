@@ -13,6 +13,7 @@ import logging
 import os
 import threading
 import zipfile
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -50,7 +51,8 @@ _static_cache = {
     'stops_by_parent': {},    # parent_station -> [stop_id, ...]
     'stops_by_name': {},      # normalized name -> [stop_id, ...]
     'routes_by_short_name': {},  # line designation -> [route_id, ...]
-    'trips_by_id': {},        # trip_id -> {route_id, trip_headsign}
+    'trips_by_id': {},        # trip_id -> {route_id, trip_headsign, shape_id}
+    'shapes_by_id': {},       # shape_id -> [[lat, lon], ...] ordered by shape_pt_sequence
     'fetched_at': None,
 }
 _static_lock = threading.Lock()
@@ -80,6 +82,8 @@ def _load_disk_cache() -> bool:
         _static_cache['stops_by_name'] = saved['stops_by_name']
         _static_cache['routes_by_short_name'] = saved['routes_by_short_name']
         _static_cache['trips_by_id'] = saved['trips_by_id']
+        # .get() with a default: caches persisted before shapes.txt support was added won't have this key.
+        _static_cache['shapes_by_id'] = saved.get('shapes_by_id', {})
         _static_cache['fetched_at'] = datetime.fromisoformat(saved['fetched_at'])
         return True
     except Exception:
@@ -95,6 +99,7 @@ def _save_disk_cache() -> None:
                 'stops_by_name': _static_cache['stops_by_name'],
                 'routes_by_short_name': _static_cache['routes_by_short_name'],
                 'trips_by_id': _static_cache['trips_by_id'],
+                'shapes_by_id': _static_cache['shapes_by_id'],
                 'fetched_at': _static_cache['fetched_at'].isoformat(),
             }, f)
     except Exception as e:
@@ -193,18 +198,39 @@ def _ensure_static_data(settings: dict) -> bool:
                         trips_by_id[trip_id] = {
                             'route_id': row.get('route_id'),
                             'trip_headsign': row.get('trip_headsign') or '',
+                            'shape_id': row.get('shape_id') or None,
                         }
+
+                # shapes.txt is an optional GTFS file — some feeds omit it entirely.
+                shapes_by_id = {}
+                if 'shapes.txt' in zf.namelist():
+                    with zf.open('shapes.txt') as f:
+                        reader = csv.DictReader(io.TextIOWrapper(f, encoding='utf-8-sig'))
+                        raw_points = {}  # shape_id -> [(seq, lat, lon), ...]
+                        for row in reader:
+                            shape_id = row.get('shape_id')
+                            lat, lon = row.get('shape_pt_lat'), row.get('shape_pt_lon')
+                            seq = row.get('shape_pt_sequence')
+                            if not shape_id or not lat or not lon:
+                                continue
+                            raw_points.setdefault(shape_id, []).append(
+                                (int(seq) if seq else 0, float(lat), float(lon))
+                            )
+                        for shape_id, pts in raw_points.items():
+                            pts.sort(key=lambda p: p[0])  # shape_pt_sequence order, not file order
+                            shapes_by_id[shape_id] = [[lat, lon] for _, lat, lon in pts]
 
             _static_cache['stops_by_id'] = stops_by_id
             _static_cache['stops_by_parent'] = stops_by_parent
             _static_cache['stops_by_name'] = stops_by_name
             _static_cache['routes_by_short_name'] = routes_by_short_name
             _static_cache['trips_by_id'] = trips_by_id
+            _static_cache['shapes_by_id'] = shapes_by_id
             _static_cache['fetched_at'] = datetime.now()
             _save_disk_cache()
             logger.info(
-                "Loaded Trafiklab static GTFS: %d stops, %d routes, %d trips",
-                len(stops_by_id), len(routes_by_short_name), len(trips_by_id)
+                "Loaded Trafiklab static GTFS: %d stops, %d routes, %d trips, %d shapes",
+                len(stops_by_id), len(routes_by_short_name), len(trips_by_id), len(shapes_by_id)
             )
             return True
         except Exception as e:
@@ -415,6 +441,46 @@ def get_vehicle_positions(line: str, destination: Optional[str], settings: dict)
             'updated_at': vp['timestamp'],
         })
     return results
+
+
+def get_route_shape(line: str, destination: Optional[str], settings: dict) -> list:
+    """Ordered [[lat, lon], ...] points for the line/direction's route path, for drawing on the map.
+
+    A route can have multiple trip patterns (branches, short-turns) each with their own
+    shape_id, so this picks the most common shape_id among matching trips as the
+    representative path rather than the first one found — avoids landing on an atypical
+    short-turn/depot trip. Best-effort — returns [] if no route/shape data is available.
+    """
+    if not _ensure_static_data(settings):
+        return []
+
+    route_ids = set(_static_cache['routes_by_short_name'].get(str(line), []))
+    if not route_ids:
+        return []
+
+    trips_by_id = _static_cache['trips_by_id']
+    dest_lower = (destination or '').lower()
+
+    def matching_shape_ids(require_destination_match):
+        counts = Counter()
+        for trip in trips_by_id.values():
+            if trip.get('route_id') not in route_ids or not trip.get('shape_id'):
+                continue
+            if require_destination_match and dest_lower:
+                headsign = (trip.get('trip_headsign') or '').lower()
+                if not headsign or dest_lower not in headsign:
+                    continue
+            counts[trip['shape_id']] += 1
+        return counts
+
+    counts = matching_shape_ids(require_destination_match=True)
+    if not counts:
+        counts = matching_shape_ids(require_destination_match=False)
+    if not counts:
+        return []
+
+    best_shape_id, _ = counts.most_common(1)[0]
+    return _static_cache['shapes_by_id'].get(best_shape_id, [])
 
 
 def get_trip_delay_info(site_id, line: str, destination: Optional[str], scheduled_iso: str, settings: dict) -> Optional[dict]:

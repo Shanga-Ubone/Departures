@@ -6,7 +6,24 @@ let leafletMap = null;
 let countdownTimerId = null;
 let staleCheckTimerId = null;
 let vehiclePollTimerId = null;
-let vehicleMarkers = [];
+let vehicleMarkersById = new Map(); // key -> {marker, lat, lon, bearing}
+let routePolyline = null;
+let stationMarker = null;
+let hasFitBounds = false;
+let lastVehiclePollAt = null;
+let mapLoadState = 'loading'; // 'loading' | 'live' | 'stalled' | 'unavailable'
+let firstPollDone = false;
+
+function resetMapState() {
+    vehicleMarkersById.forEach(entry => entry.marker.remove());
+    vehicleMarkersById = new Map();
+    if (routePolyline) { routePolyline.remove(); routePolyline = null; }
+    stationMarker = null;
+    hasFitBounds = false;
+    lastVehiclePollAt = null;
+    mapLoadState = 'loading';
+    firstPollDone = false;
+}
 
 // ── Weather ────────────────────────────────────────────────────────────────────
 function debounce(func, delay) {
@@ -89,6 +106,7 @@ function minutesUntil(isoStr) {
 }
 
 function updateCountdowns() {
+    if (leafletMap) updateMapLiveStatus();
     document.querySelectorAll('.dep-time[data-expected-iso]').forEach(el => {
         const mins = minutesUntil(el.dataset.expectedIso);
         if (mins === null) return;
@@ -286,7 +304,12 @@ function escapeAttr(str) {
 }
 
 // ── Map ────────────────────────────────────────────────────────────────────────
+const MAP_LIVE_GRACE_MS = 25000; // ~2.5 missed 10s polls before we call it "stalled"
+const MIN_BEARING_DISPLACEMENT_DEG = 0.00001; // ~1m — below this, GPS jitter makes bearing meaningless
+
 function openMap(siteId, stationName, lineNum, destination, expectedIso) {
+    resetMapState();
+
     const modal = document.getElementById('map-modal');
     modal.style.display = 'flex';
     document.body.style.overflow = 'hidden';
@@ -298,6 +321,9 @@ function openMap(siteId, stationName, lineNum, destination, expectedIso) {
         `<span class="map-dest-text"> → ${destination}</span>` +
         `<span class="map-time-text">${timeStr}</span>` +
         `<div class="map-station-text">${stationName}</div>`;
+
+    document.getElementById('map-loading-spinner').style.display = 'flex';
+    updateMapLiveStatus();
 
     // Remove previous map instance
     if (leafletMap) {
@@ -319,35 +345,102 @@ function openMap(siteId, stationName, lineNum, destination, expectedIso) {
         .then(r => r.ok ? r.json() : Promise.reject('not found'))
         .then(loc => {
             if (loc.error) throw new Error(loc.error);
-            leafletMap.setView([loc.lat, loc.lon], 16);
             const icon = L.divIcon({
                 className: 'station-marker',
                 html: `<div class="marker-pin"><span>${lineNum}</span></div>`,
                 iconSize: [44, 44],
                 iconAnchor: [22, 44]
             });
-            L.marker([loc.lat, loc.lon], { icon })
+            stationMarker = L.marker([loc.lat, loc.lon], { icon })
                 .addTo(leafletMap)
                 .bindPopup(`<b>${stationName}</b><br>Line ${lineNum} → ${destination}<br>${timeStr}`)
                 .openPopup();
+            fitMapToMarkers();
         })
         .catch(() => {
             const info = document.getElementById('map-dep-info');
             info.innerHTML += '<div class="map-no-loc">⚠ Station coordinates not yet available — check back after first data refresh</div>';
         });
 
+    // Route path for this line/direction (fetched once — the path doesn't change during a viewing session)
+    fetch(`/api/lines/${encodeURIComponent(lineNum)}/shape?direction=${encodeURIComponent(destination)}`)
+        .then(r => r.json())
+        .then(data => {
+            if (routePolyline) { routePolyline.remove(); routePolyline = null; }
+            if (data.points && data.points.length > 1 && leafletMap) {
+                routePolyline = L.polyline(data.points, { color: '#ffbf00', weight: 4, opacity: 0.35 }).addTo(leafletMap);
+            }
+        })
+        .catch(() => { /* best-effort — no route line drawn */ });
+
     // Live vehicle positions for this line/direction
     pollVehicles(lineNum, destination);
     vehiclePollTimerId = setInterval(() => pollVehicles(lineNum, destination), 10000);
 }
 
-function vehicleIcon() {
+function vehicleIcon(bearingDeg) {
+    if (bearingDeg == null) {
+        return L.divIcon({
+            className: 'vehicle-marker',
+            html: '<div class="vehicle-dot"></div>',
+            iconSize: [18, 18],
+            iconAnchor: [9, 9]
+        });
+    }
     return L.divIcon({
         className: 'vehicle-marker',
-        html: '<div class="vehicle-dot"></div>',
+        html: `<div class="vehicle-arrow" style="transform: rotate(${bearingDeg}deg);"></div>`,
         iconSize: [18, 18],
         iconAnchor: [9, 9]
     });
+}
+
+// Initial bearing (forward azimuth, degrees) from point 1 to point 2.
+function computeBearing(lat1, lon1, lat2, lon2) {
+    if (Math.abs(lat2 - lat1) < MIN_BEARING_DISPLACEMENT_DEG && Math.abs(lon2 - lon1) < MIN_BEARING_DISPLACEMENT_DEG) {
+        return null;
+    }
+    const toRad = d => d * Math.PI / 180;
+    const toDeg = r => r * 180 / Math.PI;
+    const phi1 = toRad(lat1), phi2 = toRad(lat2), dLambda = toRad(lon2 - lon1);
+    const theta = Math.atan2(
+        Math.sin(dLambda) * Math.cos(phi2),
+        Math.cos(phi1) * Math.sin(phi2) - Math.sin(phi1) * Math.cos(phi2) * Math.cos(dLambda)
+    );
+    return (toDeg(theta) + 360) % 360;
+}
+
+function fitMapToMarkers() {
+    if (!leafletMap) return;
+    const markers = [stationMarker, ...[...vehicleMarkersById.values()].map(e => e.marker)].filter(Boolean);
+    if (markers.length < 1) return;
+    if (markers.length === 1) {
+        leafletMap.setView(markers[0].getLatLng(), 16);
+        return;
+    }
+    leafletMap.fitBounds(L.featureGroup(markers).getBounds(), { padding: [40, 40], maxZoom: 16 });
+}
+
+function updateMapLiveStatus() {
+    const dot = document.getElementById('map-live-dot');
+    const label = document.getElementById('map-live-label');
+    if (!dot || !label) return;
+
+    if (mapLoadState === 'unavailable') {
+        dot.className = 'conn-dot';
+        label.textContent = 'Live tracking unavailable';
+        return;
+    }
+
+    const stalled = !lastVehiclePollAt || (Date.now() - lastVehiclePollAt) > MAP_LIVE_GRACE_MS;
+    if (stalled) {
+        dot.className = 'conn-dot stale';
+        label.textContent = 'reconnecting...';
+    } else {
+        dot.className = 'conn-dot online';
+        const secs = Math.max(0, Math.floor((Date.now() - lastVehiclePollAt) / 1000));
+        label.textContent = `updated ${secs}s ago`;
+    }
 }
 
 function pollVehicles(lineNum, destination) {
@@ -355,8 +448,14 @@ function pollVehicles(lineNum, destination) {
     fetch(`/api/lines/${encodeURIComponent(lineNum)}/vehicles?direction=${encodeURIComponent(destination)}`)
         .then(r => r.json())
         .then(data => {
-            vehicleMarkers.forEach(m => m.remove());
-            vehicleMarkers = [];
+            if (!data.available) {
+                mapLoadState = 'unavailable';
+            } else {
+                mapLoadState = 'live';
+                lastVehiclePollAt = Date.now();
+            }
+            finishFirstPoll();
+            updateMapLiveStatus();
 
             const info = document.getElementById('map-dep-info');
             const existingNote = info.querySelector('.map-no-vehicles');
@@ -368,14 +467,64 @@ function pollVehicles(lineNum, destination) {
                     '<div class="map-no-vehicles">No live vehicles currently reported for this line</div>');
             }
 
+            const seenKeys = new Set();
             vehicles.forEach(v => {
                 if (v.lat == null || v.lon == null || !leafletMap) return;
-                vehicleMarkers.push(
-                    L.marker([v.lat, v.lon], { icon: vehicleIcon() }).addTo(leafletMap)
-                );
+                const key = v.vehicle_id || v.trip_id || null;
+
+                if (key == null) {
+                    // Unkeyable — can't track identity across polls, render a plain one-off marker.
+                    L.marker([v.lat, v.lon], { icon: vehicleIcon(v.bearing ?? null) }).addTo(leafletMap);
+                    return;
+                }
+
+                seenKeys.add(key);
+                const existing = vehicleMarkersById.get(key);
+                if (existing) {
+                    let bearing = v.bearing;
+                    if (bearing == null) {
+                        bearing = computeBearing(existing.lat, existing.lon, v.lat, v.lon);
+                    }
+                    if (bearing == null) bearing = existing.bearing;
+
+                    existing.marker.setLatLng([v.lat, v.lon]);
+                    if (bearing !== existing.bearing) {
+                        existing.marker.setIcon(vehicleIcon(bearing));
+                    }
+                    existing.lat = v.lat;
+                    existing.lon = v.lon;
+                    existing.bearing = bearing;
+                } else {
+                    const marker = L.marker([v.lat, v.lon], { icon: vehicleIcon(v.bearing ?? null) }).addTo(leafletMap);
+                    vehicleMarkersById.set(key, { marker, lat: v.lat, lon: v.lon, bearing: v.bearing ?? null });
+                }
             });
+
+            // Drop markers for vehicles no longer reported by the feed.
+            vehicleMarkersById.forEach((entry, key) => {
+                if (!seenKeys.has(key)) {
+                    entry.marker.remove();
+                    vehicleMarkersById.delete(key);
+                }
+            });
+
+            if (!hasFitBounds && vehicleMarkersById.size > 0) {
+                fitMapToMarkers();
+                hasFitBounds = true;
+            }
         })
-        .catch(() => { /* best-effort — leave existing markers/state untouched on transient failure */ });
+        .catch(() => {
+            finishFirstPoll();
+            updateMapLiveStatus();
+            /* best-effort — leave existing markers/state untouched on transient failure */
+        });
+}
+
+function finishFirstPoll() {
+    if (firstPollDone) return;
+    firstPollDone = true;
+    const spinner = document.getElementById('map-loading-spinner');
+    if (spinner) spinner.style.display = 'none';
 }
 
 function closeMap() {
@@ -385,8 +534,7 @@ function closeMap() {
         clearInterval(vehiclePollTimerId);
         vehiclePollTimerId = null;
     }
-    vehicleMarkers.forEach(m => m.remove());
-    vehicleMarkers = [];
+    resetMapState();
     if (leafletMap) {
         leafletMap.remove();
         leafletMap = null;
