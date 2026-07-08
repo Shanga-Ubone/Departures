@@ -219,6 +219,13 @@ def _build_stop_times_db(zf, dest_path: str) -> bool:
 
 _stop_times_build_lock = threading.Lock()
 _stop_times_build_in_progress = False
+_stop_times_build_last_attempt: Optional[datetime] = None
+# Without a cooldown, every request that finds the index missing spawns its own
+# fresh-download retry (the in-progress flag only dedupes *concurrent* attempts,
+# not sequential ones) — on a failure (e.g. the static API rate-limiting us) that
+# turns into a retry storm hitting the rate-limited endpoint every few seconds,
+# which both guarantees it never recovers and burns the 60-calls/30-days budget.
+_STOP_TIMES_BUILD_COOLDOWN_SECONDS = 900
 
 
 def _kick_off_stop_times_build(settings: dict, zip_bytes: Optional[bytes] = None) -> None:
@@ -234,15 +241,22 @@ def _kick_off_stop_times_build(settings: dict, zip_bytes: Optional[bytes] = None
     the rest of static data was already fresh and no download just happened).
 
     Deduped in-process via a flag (so a burst of requests before the first
-    background build finishes doesn't spawn a pile of redundant threads); the
-    file lock inside _build_stop_times_db separately dedupes across the
-    multiple OS processes a production WSGI server typically runs.
+    background build finishes doesn't spawn a pile of redundant threads) plus a
+    cooldown after each attempt (successful or not) so repeated requests don't
+    retry a failing download every few seconds; the file lock inside
+    _build_stop_times_db separately dedupes across the multiple OS processes a
+    production WSGI server typically runs.
     """
-    global _stop_times_build_in_progress
+    global _stop_times_build_in_progress, _stop_times_build_last_attempt
     with _stop_times_build_lock:
         if _stop_times_build_in_progress:
             return
+        if _stop_times_build_last_attempt is not None:
+            elapsed = (datetime.now() - _stop_times_build_last_attempt).total_seconds()
+            if elapsed < _STOP_TIMES_BUILD_COOLDOWN_SECONDS:
+                return
         _stop_times_build_in_progress = True
+        _stop_times_build_last_attempt = datetime.now()
 
     def _job():
         global _stop_times_build_in_progress
