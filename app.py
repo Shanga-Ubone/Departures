@@ -75,7 +75,6 @@ def get_config():
 # ── Data caches ────────────────────────────────────────────────────────────────
 
 _cache = {'data': None, 'timestamp': None}
-_location_cache: dict = {}  # site_id -> {lat, lon, name}
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -132,7 +131,7 @@ def enrich_departure(departure, line_num, filters):
         'line_num': line_num
     }
 
-def _add_gtfs_cross_check(dep: dict, site_id, config: dict, station_deviations: Optional[list] = None) -> None:
+def _add_gtfs_cross_check(dep: dict, site_id, config: dict, station_deviations: Optional[list] = None, station_name: Optional[str] = None) -> None:
     """Best-effort GTFS-RT cross-check against SL's own delay/deviation data.
 
     Mutates `dep` in place with optional `gtfs_cross_check`/`gtfs_alert` keys.
@@ -145,14 +144,16 @@ def _add_gtfs_cross_check(dep: dict, site_id, config: dict, station_deviations: 
         if not line_num or not scheduled:
             return
 
-        match = trafiklab_client.get_trip_delay_info(site_id, line_num, destination, scheduled, config)
-        if match and match.get('delay_seconds') is not None:
-            sched_dt = parse_datetime(scheduled)
-            exp_dt = parse_datetime(dep.get('expected') or scheduled)
-            if sched_dt and exp_dt:
-                sl_delay_minutes = (exp_dt - sched_dt).total_seconds() / 60
-                gtfs_delay_minutes = match['delay_seconds'] / 60
-                dep['gtfs_cross_check'] = 'match' if abs(sl_delay_minutes - gtfs_delay_minutes) <= 1 else 'delay_diff'
+        match = trafiklab_client.get_trip_delay_info(site_id, line_num, destination, scheduled, config, name_hint=station_name)
+        if match:
+            dep['trip_id'] = match.get('trip_id')
+            if match.get('delay_seconds') is not None:
+                sched_dt = parse_datetime(scheduled)
+                exp_dt = parse_datetime(dep.get('expected') or scheduled)
+                if sched_dt and exp_dt:
+                    sl_delay_minutes = (exp_dt - sched_dt).total_seconds() / 60
+                    gtfs_delay_minutes = match['delay_seconds'] / 60
+                    dep['gtfs_cross_check'] = 'match' if abs(sl_delay_minutes - gtfs_delay_minutes) <= 1 else 'delay_diff'
 
         alerts = trafiklab_client.get_active_alerts_for_route(line_num, config)
         if alerts:
@@ -172,24 +173,6 @@ def _add_gtfs_cross_check(dep: dict, site_id, config: dict, station_deviations: 
     except Exception as e:
         logger.warning(f"GTFS cross-check failed for site {site_id} line {dep.get('line_num')}: {e}")
 
-
-def _try_cache_location(site_id: int, departures: list, site_name: Optional[str]) -> None:
-    """Cache station coordinates extracted from departure stop data."""
-    if site_id in _location_cache or not departures:
-        return
-    first = departures[0]
-    for area_key in ('stop_point', 'stop_area'):
-        area = first.get(area_key, {})
-        if not isinstance(area, dict):
-            continue
-        lat = area.get('lat') or area.get('latitude') or area.get('lat_wgs84')
-        lon = area.get('lon') or area.get('longitude') or area.get('lon_wgs84')
-        if lat and lon:
-            _location_cache[site_id] = {
-                'lat': float(lat), 'lon': float(lon),
-                'name': site_name or area.get('name', f'Site {site_id}')
-            }
-            return
 
 def get_departures(site_id: int, filters: list) -> SiteResult:
     """Fetch and filter departures for a site, with retry and coordinate caching."""
@@ -216,8 +199,6 @@ def get_departures(site_id: int, filters: list) -> SiteResult:
         site_name = None
         if raw_departures:
             site_name = raw_departures[0].get('stop_area', {}).get('name')
-
-        _try_cache_location(site_id, raw_departures, site_name)
 
         filtered = []
         live_by_line = defaultdict(set)
@@ -322,12 +303,11 @@ def get_data():
 
             if filtered_deps:
                 display_deps = filtered_deps[:max_departures]
+                display_name = site_config['label'] or site_info.get('site_name') or f"Site {site_id}"
                 if trafiklab_client.is_enabled():
                     station_deviations = site_info.get('stop_deviations') or []
                     for dep in display_deps:
-                        _add_gtfs_cross_check(dep, site_id, config, station_deviations)
-
-                display_name = site_config['label'] or site_info.get('site_name') or f"Site {site_id}"
+                        _add_gtfs_cross_check(dep, site_id, config, station_deviations, station_name=display_name)
                 group_stations.append({
                     "station": display_name,
                     "site_id": site_id,
@@ -388,76 +368,22 @@ def get_data():
     return response
 
 
-@app.route('/api/sites/<int:site_id>/location')
-def get_site_location(site_id: int):
-    """Return geographic coordinates for a station."""
-    if site_id in _location_cache:
-        return jsonify(_location_cache[site_id])
-
-    config, _ = get_config()
-    api_base_url = config.get('api_base_url', 'https://transport.integration.sl.se/v1/sites')
-    api_timeout = config.get('api_timeout', 10)
-
-    # SL's site IDs and GTFS stop_ids use unrelated numbering schemes, so a
-    # station display name is the only reliable way to match them — prefer
-    # the name the client already has (e.g. from the departure board) over
-    # a config label, since labels are usually unset.
-    name_hint = request.args.get('name') or next(
-        (r.get('label') for r in config.get('monitored_routes', []) if r.get('id') == site_id and r.get('label')),
-        None
-    )
-    gtfs_result = trafiklab_client.get_station_coords(site_id, config, name_hint=name_hint)
-    if gtfs_result:
-        _location_cache[site_id] = gtfs_result
-        return jsonify(gtfs_result)
-
-    try:
-        resp = requests.get(
-            f"{api_base_url}/{site_id}",
-            headers={"User-Agent": "SLTrafficMonitor/1.0"},
-            timeout=api_timeout
-        )
-        if resp.ok:
-            data = resp.json()
-            if isinstance(data, dict):
-                lat = data.get('lat') or data.get('latitude')
-                lon = data.get('lon') or data.get('longitude')
-                if lat and lon:
-                    result = {'lat': float(lat), 'lon': float(lon), 'name': data.get('name')}
-                    _location_cache[site_id] = result
-                    return jsonify(result)
-    except Exception as e:
-        logger.error(f"Location lookup failed for site {site_id}: {e}")
-
-    return jsonify({'error': 'Location not available'}), 404
-
-
-@app.route('/api/lines/<line>/vehicles')
-def get_line_vehicles(line):
-    """Live vehicle positions for a line/direction, for the map. Best-effort — always 200."""
-    destination = request.args.get('direction', '')
+@app.route('/api/lines/<line>/progress')
+def get_line_progress_route(line):
+    """Stop chain + live vehicle progress for a line/destination, for the inline
+    logical-line tracker. Best-effort — always 200."""
+    destination = request.args.get('destination', '')
     site_id = request.args.get('site_id')
     station_name = request.args.get('station_name')
+    trip_ids = [t for t in request.args.get('trip_ids', '').split(',') if t]
+    before = int(request.args.get('before', 3))
     config, _ = get_config()
     try:
-        vehicles = trafiklab_client.get_vehicle_positions(line, destination, config, site_id=site_id, station_name=station_name)
+        result = trafiklab_client.get_line_progress(line, destination, site_id, trip_ids, config, before=before, name_hint=station_name)
     except Exception as e:
-        logger.warning(f"Vehicle position lookup failed for line {line}: {e}")
-        vehicles = []
-    return jsonify({'vehicles': vehicles, 'available': trafiklab_client.is_enabled()})
-
-
-@app.route('/api/lines/<line>/shape')
-def get_line_shape(line):
-    """Route polyline for a line/direction, for the map. Best-effort — always 200."""
-    destination = request.args.get('direction', '')
-    config, _ = get_config()
-    try:
-        points = trafiklab_client.get_route_shape(line, destination, config)
-    except Exception as e:
-        logger.warning(f"Route shape lookup failed for line {line}: {e}")
-        points = []
-    return jsonify({'points': points, 'available': trafiklab_client.is_enabled()})
+        logger.warning(f"Line progress lookup failed for line {line}: {e}")
+        result = {'stops': [], 'vehicles': []}
+    return jsonify({**result, 'available': trafiklab_client.is_enabled()})
 
 
 @app.route('/config')

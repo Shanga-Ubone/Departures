@@ -2,28 +2,9 @@
 let lastSuccessfulFetch = null;
 let leaveNowActive = false;
 let walkMinutes = parseInt(localStorage.getItem('walkMinutes') || '3', 10);
-let leafletMap = null;
 let countdownTimerId = null;
 let staleCheckTimerId = null;
-let vehiclePollTimerId = null;
-let vehicleMarkersById = new Map(); // key -> {marker, lat, lon, sameDirection}
-let routePolyline = null;
-let stationMarker = null;
-let hasFitBounds = false;
-let lastVehiclePollAt = null;
-let mapLoadState = 'loading'; // 'loading' | 'live' | 'stalled' | 'unavailable'
-let firstPollDone = false;
-
-function resetMapState() {
-    vehicleMarkersById.forEach(entry => entry.marker.remove());
-    vehicleMarkersById = new Map();
-    if (routePolyline) { routePolyline.remove(); routePolyline = null; }
-    stationMarker = null;
-    hasFitBounds = false;
-    lastVehiclePollAt = null;
-    mapLoadState = 'loading';
-    firstPollDone = false;
-}
+let activeLineVizTimers = []; // interval ids for expanded logical-line trackers, cleared on every board redraw
 
 // ── Weather ────────────────────────────────────────────────────────────────────
 function debounce(func, delay) {
@@ -106,12 +87,6 @@ function minutesUntil(isoStr) {
 }
 
 function updateCountdowns() {
-    if (leafletMap) {
-        updateMapLiveStatus();
-        vehicleMarkersById.forEach(entry => {
-            if (entry.destination) entry.marker.setTooltipContent(vehicleTooltipHtml(entry.destination, entry.etaIso));
-        });
-    }
     document.querySelectorAll('.dep-time[data-expected-iso]').forEach(el => {
         const mins = minutesUntil(el.dataset.expectedIso);
         if (mins === null) return;
@@ -198,6 +173,9 @@ async function updateBoard() {
         updateConnectionStatus();
         document.getElementById('stale-banner').style.display = 'none';
 
+        activeLineVizTimers.forEach(id => clearInterval(id));
+        activeLineVizTimers = [];
+
         const board = document.getElementById('board');
         board.innerHTML = '';
         document.getElementById('loading').style.display = 'none';
@@ -244,33 +222,58 @@ async function updateBoard() {
                     : '';
 
                 const nextAttrs = firstDep
-                    ? `data-expected-iso="${firstDep.expected_iso}" data-status-text="${firstDep.status_text}" data-site-id="${siteId}" data-station-name="${escapeAttr(station.station)}" data-line-num="${firstDep.line_num}" data-destination="${escapeAttr(firstDep.destination)}"`
+                    ? `data-expected-iso="${firstDep.expected_iso}" data-status-text="${firstDep.status_text}"`
                     : '';
 
-                let rows = '';
+                // Group departures by (line, destination) — each group gets its own
+                // collapsible logical-line tracker shared by all its upcoming trips.
+                const groups = new Map();
                 deps.forEach(dep => {
-                    const sc = dep.status_text === 'On Time' ? 'ontime' : 'late';
-                    const mins = minutesUntil(dep.expected_iso);
-                    const timeDisplay = (mins !== null && mins >= 0 && mins < 60)
-                        ? `${mins} min`
-                        : dep.display_time;
-                    const imminent = mins !== null && mins <= 2 && mins >= 0 ? ' imminent' : '';
-                    const gtfsTitle = dep.gtfs_alert
-                        ? dep.gtfs_alert.header
-                        : (dep.gtfs_cross_check === 'delay_diff' ? 'Trafiklab real-time data disagrees with this estimate' : '');
-                    const gtfsFlag = gtfsTitle ? `<span class="gtfs-flag" title="${escapeAttr(gtfsTitle)}">&#8224;</span>` : '';
-                    rows += `<tr class="dep-row"
+                    const key = `${dep.line_num}|${dep.destination}`;
+                    if (!groups.has(key)) {
+                        groups.set(key, { line_num: dep.line_num, destination: dep.destination, deps: [] });
+                    }
+                    groups.get(key).deps.push(dep);
+                });
+
+                let groupsHtml = '';
+                groups.forEach(group => {
+                    let depRows = '';
+                    group.deps.forEach(dep => {
+                        const sc = dep.status_text === 'On Time' ? 'ontime' : 'late';
+                        const mins = minutesUntil(dep.expected_iso);
+                        const timeDisplay = (mins !== null && mins >= 0 && mins < 60)
+                            ? `${mins} min`
+                            : dep.display_time;
+                        const imminent = mins !== null && mins <= 2 && mins >= 0 ? ' imminent' : '';
+                        const gtfsTitle = dep.gtfs_alert
+                            ? dep.gtfs_alert.header
+                            : (dep.gtfs_cross_check === 'delay_diff' ? 'Trafiklab real-time data disagrees with this estimate' : '');
+                        const gtfsFlag = gtfsTitle ? `<span class="gtfs-flag" title="${escapeAttr(gtfsTitle)}">&#8224;</span>` : '';
+                        depRows += `<tr class="dep-row" data-expected-iso="${dep.expected_iso}">
+                            <td class="dep-time time${imminent}" data-expected-iso="${dep.expected_iso}" data-clock-time="${dep.display_time}">${timeDisplay}</td>
+                            <td class="status ${sc}">${dep.status_text}${gtfsFlag}</td>
+                        </tr>`;
+                    });
+
+                    const depsJson = escapeAttr(JSON.stringify(
+                        group.deps.map(d => ({ trip_id: d.trip_id || null, display_time: d.display_time, status_text: d.status_text }))
+                    ));
+
+                    groupsHtml += `<div class="line-group"
                         data-site-id="${siteId}"
                         data-station-name="${escapeAttr(station.station)}"
-                        data-line-num="${dep.line_num}"
-                        data-destination="${escapeAttr(dep.destination)}"
-                        data-expected-iso="${dep.expected_iso}">
-                        <td class="line">${dep.line_num}</td>
-                        <td class="dest">${dep.destination}</td>
-                        <td class="dep-time time${imminent}" data-expected-iso="${dep.expected_iso}" data-clock-time="${dep.display_time}">${timeDisplay}</td>
-                        <td class="status ${sc}">${dep.status_text}${gtfsFlag}</td>
-                        <td class="map-tap">&#x1F4CD;</td>
-                    </tr>`;
+                        data-line-num="${group.line_num}"
+                        data-destination="${escapeAttr(group.destination)}"
+                        data-deps="${depsJson}">
+                        <div class="line-group-header">
+                            <span class="line-num">${group.line_num}</span>
+                            <span class="line-dest">→ ${group.destination}</span>
+                            <span class="chevron">▼</span>
+                        </div>
+                        <table class="line-departures"><tbody>${depRows}</tbody></table>
+                        <div class="line-viz"></div>
+                    </div>`;
                 });
 
                 const card = document.createElement('div');
@@ -283,9 +286,8 @@ async function updateBoard() {
                     </div>
                     <div class="card-next ${nextClass}" ${nextAttrs}>
                         <span class="next-status">${firstDep ? `Next: ${firstDep.display_time}  ${firstDep.status_text}` : 'No departures found'}</span>
-                        ${firstDep ? '<span class="map-hint"> — tap row for map</span>' : ''}
                     </div>
-                    <div class="departures-wrapper"><table>${rows}</table></div>
+                    <div class="departures-wrapper">${groupsHtml}</div>
                 `;
                 board.appendChild(card);
             });
@@ -311,270 +313,99 @@ function escapeAttr(str) {
     return String(str || '').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-// ── Map ────────────────────────────────────────────────────────────────────────
-const MAP_LIVE_GRACE_MS = 25000; // ~2.5 missed 10s polls before we call it "stalled"
+// ── Logical-line vehicle tracker ────────────────────────────────────────────────
+// Your station is the LEFT anchor of the track; upstream stops extend to the
+// right in travel order, so a vehicle's marker moves right→left as it approaches.
 
-function openMap(siteId, stationName, lineNum, destination, expectedIso) {
-    resetMapState();
-
-    const modal = document.getElementById('map-modal');
-    modal.style.display = 'flex';
-    document.body.style.overflow = 'hidden';
-
-    const mins = minutesUntil(expectedIso);
-    const timeStr = mins === null ? '' : mins < 0 ? 'now' : `in ${mins} min`;
-    document.getElementById('map-dep-info').innerHTML =
-        `<span class="map-line-badge">${lineNum}</span>` +
-        `<span class="map-dest-text"> → ${destination}</span>` +
-        `<span class="map-time-text">${timeStr}</span>` +
-        `<div class="map-station-text">${stationName}</div>`;
-
-    document.getElementById('map-loading-spinner').style.display = 'flex';
-    updateMapLiveStatus();
-
-    // Remove previous map instance
-    if (leafletMap) {
-        leafletMap.remove();
-        leafletMap = null;
-    }
-
-    const mapEl = document.getElementById('leaflet-map');
-    // Default: Stockholm city centre
-    leafletMap = L.map(mapEl, { zoomControl: true }).setView([59.3293, 18.0686], 14);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
-        subdomains: 'abcd',
-        maxZoom: 19
-    }).addTo(leafletMap);
-
-    // Fetch station coordinates
-    fetch(`/api/sites/${siteId}/location?name=${encodeURIComponent(stationName)}`)
-        .then(r => r.ok ? r.json() : Promise.reject('not found'))
-        .then(loc => {
-            if (loc.error) throw new Error(loc.error);
-            const icon = L.divIcon({
-                className: 'station-marker',
-                html: `<div class="marker-pin"></div>`,
-                iconSize: [44, 44],
-                iconAnchor: [22, 44]
-            });
-            stationMarker = L.marker([loc.lat, loc.lon], { icon })
-                .addTo(leafletMap)
-                .bindTooltip(stationName, { permanent: true, direction: 'top', className: 'station-label', offset: [0, -40] })
-                .bindPopup(`<b>${stationName}</b><br>Line ${lineNum} → ${destination}<br>${timeStr}`)
-                .openPopup();
-            fitMapToMarkers();
-        })
-        .catch(() => {
-            const info = document.getElementById('map-dep-info');
-            info.innerHTML += '<div class="map-no-loc">⚠ Station coordinates not yet available — check back after first data refresh</div>';
-        });
-
-    // Route path for this line/direction (fetched once — the path doesn't change during a viewing session)
-    fetch(`/api/lines/${encodeURIComponent(lineNum)}/shape?direction=${encodeURIComponent(destination)}`)
-        .then(r => r.json())
-        .then(data => {
-            if (routePolyline) { routePolyline.remove(); routePolyline = null; }
-            if (data.points && data.points.length > 1 && leafletMap) {
-                routePolyline = L.polyline(data.points, { color: '#ffffff', weight: 2, opacity: 0.7 }).addTo(leafletMap);
-            }
-        })
-        .catch(() => { /* best-effort — no route line drawn */ });
-
-    // Live vehicle positions for this line/direction
-    pollVehicles(lineNum, destination, siteId, stationName);
-    vehiclePollTimerId = setInterval(() => pollVehicles(lineNum, destination, siteId, stationName), 10000);
-}
-
-function vehicleTooltipHtml(destination, etaIso) {
-    const mins = etaIso ? minutesUntil(etaIso) : null;
-    const etaText = mins === null ? '' : mins <= 0 ? ' · arriving' : ` · ${mins} min`;
-    return `<span class="vehicle-label-dest">→ ${destination || ''}</span><span class="vehicle-label-eta">${etaText}</span>`;
-}
-
-// sameDirection: true (heading your way) | false (opposite) | null/undefined (unknown)
-function vehicleIcon(sameDirection) {
-    const dirClass = sameDirection === true ? 'dir-same' : sameDirection === false ? 'dir-opposite' : 'dir-unknown';
-    return L.divIcon({
-        className: 'vehicle-marker',
-        html: `<div class="vehicle-dot ${dirClass}"></div>`,
-        iconSize: [18, 18],
-        iconAnchor: [9, 9]
-    });
-}
-
-function fitMapToMarkers() {
-    if (!leafletMap) return;
-    const markers = [stationMarker, ...[...vehicleMarkersById.values()].map(e => e.marker)].filter(Boolean);
-    if (markers.length < 1) return;
-    if (markers.length === 1) {
-        leafletMap.setView(markers[0].getLatLng(), 16);
-        return;
-    }
-    leafletMap.fitBounds(L.featureGroup(markers).getBounds(), { padding: [40, 40], maxZoom: 16 });
-}
-
-function updateMapLiveStatus() {
-    const dot = document.getElementById('map-live-dot');
-    const label = document.getElementById('map-live-label');
-    if (!dot || !label) return;
-
-    if (mapLoadState === 'unavailable') {
-        dot.className = 'conn-dot';
-        label.textContent = 'Live tracking unavailable';
-        return;
-    }
-
-    const stalled = !lastVehiclePollAt || (Date.now() - lastVehiclePollAt) > MAP_LIVE_GRACE_MS;
-    if (stalled) {
-        dot.className = 'conn-dot stale';
-        label.textContent = 'reconnecting...';
+function toggleLineGroup(groupEl) {
+    const expanding = !groupEl.classList.contains('expanded');
+    groupEl.classList.toggle('expanded', expanding);
+    if (expanding) {
+        startLineViz(groupEl);
     } else {
-        dot.className = 'conn-dot online';
-        const secs = Math.max(0, Math.floor((Date.now() - lastVehiclePollAt) / 1000));
-        label.textContent = `updated ${secs}s ago`;
+        stopLineViz(groupEl);
     }
 }
 
-function pollVehicles(lineNum, destination, siteId, stationName) {
-    if (!leafletMap) return;
-    fetch(`/api/lines/${encodeURIComponent(lineNum)}/vehicles?direction=${encodeURIComponent(destination)}&site_id=${encodeURIComponent(siteId)}&station_name=${encodeURIComponent(stationName)}`)
-        .then(r => r.json())
-        .then(data => {
-            if (!data.available) {
-                mapLoadState = 'unavailable';
-            } else {
-                mapLoadState = 'live';
-                lastVehiclePollAt = Date.now();
-            }
-            finishFirstPoll();
-            updateMapLiveStatus();
-
-            const info = document.getElementById('map-dep-info');
-            const existingNote = info.querySelector('.map-no-vehicles');
-            if (existingNote) existingNote.remove();
-
-            const vehicles = data.vehicles || [];
-            if (data.available && vehicles.length === 0) {
-                info.insertAdjacentHTML('beforeend',
-                    '<div class="map-no-vehicles">No live vehicles currently reported for this line</div>');
-            }
-
-            const seenKeys = new Set();
-            vehicles.forEach(v => {
-                if (v.lat == null || v.lon == null || !leafletMap) return;
-                const key = v.vehicle_id || v.trip_id || null;
-
-                if (key == null) {
-                    // Unkeyable — can't track identity across polls, render a plain one-off marker.
-                    L.marker([v.lat, v.lon], { icon: vehicleIcon(v.same_direction ?? null) }).addTo(leafletMap);
-                    return;
-                }
-
-                seenKeys.add(key);
-                const existing = vehicleMarkersById.get(key);
-                if (existing) {
-                    const sameDirection = v.same_direction ?? null;
-
-                    existing.marker.setLatLng([v.lat, v.lon]);
-                    if (sameDirection !== existing.sameDirection) {
-                        existing.marker.setIcon(vehicleIcon(sameDirection));
-                    }
-                    existing.lat = v.lat;
-                    existing.lon = v.lon;
-                    existing.sameDirection = sameDirection;
-
-                    if (v.destination && (v.destination !== existing.destination || v.eta_iso !== existing.etaIso)) {
-                        const html = vehicleTooltipHtml(v.destination, v.eta_iso);
-                        if (existing.marker.getTooltip()) {
-                            existing.marker.setTooltipContent(html);
-                        } else {
-                            existing.marker.bindTooltip(html, { permanent: true, direction: 'right', className: 'vehicle-label', offset: [10, 0] });
-                        }
-                    }
-                    existing.destination = v.destination ?? null;
-                    existing.etaIso = v.eta_iso ?? null;
-                } else {
-                    const marker = L.marker([v.lat, v.lon], { icon: vehicleIcon(v.same_direction ?? null) }).addTo(leafletMap);
-                    if (v.destination) {
-                        marker.bindTooltip(vehicleTooltipHtml(v.destination, v.eta_iso), {
-                            permanent: true, direction: 'right', className: 'vehicle-label', offset: [10, 0]
-                        });
-                    }
-                    vehicleMarkersById.set(key, {
-                        marker, lat: v.lat, lon: v.lon, sameDirection: v.same_direction ?? null,
-                        destination: v.destination ?? null, etaIso: v.eta_iso ?? null
-                    });
-                }
-            });
-
-            // Drop markers for vehicles no longer reported by the feed.
-            vehicleMarkersById.forEach((entry, key) => {
-                if (!seenKeys.has(key)) {
-                    entry.marker.remove();
-                    vehicleMarkersById.delete(key);
-                }
-            });
-
-            if (!hasFitBounds && vehicleMarkersById.size > 0) {
-                fitMapToMarkers();
-                hasFitBounds = true;
-            }
-        })
-        .catch(() => {
-            finishFirstPoll();
-            updateMapLiveStatus();
-            /* best-effort — leave existing markers/state untouched on transient failure */
-        });
+function startLineViz(groupEl) {
+    const fetchAndRender = () => fetchLineProgress(groupEl);
+    fetchAndRender();
+    const timerId = setInterval(fetchAndRender, 10000);
+    groupEl._vizTimerId = timerId;
+    activeLineVizTimers.push(timerId);
 }
 
-function finishFirstPoll() {
-    if (firstPollDone) return;
-    firstPollDone = true;
-    const spinner = document.getElementById('map-loading-spinner');
-    if (spinner) spinner.style.display = 'none';
+function stopLineViz(groupEl) {
+    if (groupEl._vizTimerId) {
+        clearInterval(groupEl._vizTimerId);
+        activeLineVizTimers = activeLineVizTimers.filter(id => id !== groupEl._vizTimerId);
+        groupEl._vizTimerId = null;
+    }
 }
 
-function closeMap() {
-    document.getElementById('map-modal').style.display = 'none';
-    document.body.style.overflow = '';
-    if (vehiclePollTimerId) {
-        clearInterval(vehiclePollTimerId);
-        vehiclePollTimerId = null;
+async function fetchLineProgress(groupEl) {
+    const vizEl = groupEl.querySelector('.line-viz');
+    const { lineNum, siteId, stationName, destination } = groupEl.dataset;
+    const deps = JSON.parse(groupEl.dataset.deps || '[]');
+    const tripIds = deps.map(d => d.trip_id).filter(Boolean);
+
+    if (tripIds.length === 0) {
+        vizEl.innerHTML = '<div class="line-viz-unavailable">Live tracking unavailable for this line</div>';
+        return;
     }
-    resetMapState();
-    if (leafletMap) {
-        leafletMap.remove();
-        leafletMap = null;
+
+    try {
+        const url = `/api/lines/${encodeURIComponent(lineNum)}/progress` +
+            `?destination=${encodeURIComponent(destination)}&site_id=${encodeURIComponent(siteId)}` +
+            `&station_name=${encodeURIComponent(stationName)}&trip_ids=${encodeURIComponent(tripIds.join(','))}`;
+        const resp = await fetch(url);
+        const data = await resp.json();
+        renderLineViz(vizEl, data, deps);
+    } catch (e) {
+        vizEl.innerHTML = '<div class="line-viz-unavailable">Live tracking unavailable</div>';
     }
+}
+
+function renderLineViz(vizEl, data, deps) {
+    if (!data.available || !data.stops || data.stops.length < 2) {
+        vizEl.innerHTML = '<div class="line-viz-unavailable">Live tracking unavailable for this line</div>';
+        return;
+    }
+
+    const stops = data.stops; // furthest-upstream(0) -> your station(last), by dist_from_start
+    const total = stops[stops.length - 1].dist_from_start || 1;
+    const reversed = [...stops].slice().reverse(); // your station first, since it's the left anchor
+
+    const ticksHtml = reversed.map((s, i) => {
+        const leftPct = 100 - (s.dist_from_start / total * 100);
+        const isTarget = i === 0;
+        return `<div class="line-stop${isTarget ? ' target' : ''}" style="left:${leftPct}%">
+            <div class="stop-dot"></div>
+            <div class="stop-label">${isTarget ? 'YOUR STOP' : escapeAttr(s.name)}</div>
+        </div>`;
+    }).join('');
+
+    const labelByTripId = new Map(deps.filter(d => d.trip_id).map(d => [d.trip_id, `${d.display_time} ${d.status_text}`]));
+    const vehiclesHtml = (data.vehicles || []).map(v => {
+        if (v.progress == null) return '';
+        const leftPct = (1 - v.progress) * 100;
+        const label = labelByTripId.get(v.trip_id) || '';
+        return `<div class="line-vehicle" style="left:${leftPct}%" title="${escapeAttr(label)}">🚋</div>`;
+    }).join('');
+
+    vizEl.innerHTML = `<div class="line-track">
+        <div class="line-track-bar"></div>
+        ${ticksHtml}
+        ${vehiclesHtml}
+    </div>`;
 }
 
 // ── Event delegation ───────────────────────────────────────────────────────────
 document.getElementById('board').addEventListener('click', e => {
-    // Departure row tap → open map
-    const row = e.target.closest('tr.dep-row');
-    if (row) {
-        openMap(
-            parseInt(row.dataset.siteId),
-            row.dataset.stationName,
-            row.dataset.lineNum,
-            row.dataset.destination,
-            row.dataset.expectedIso
-        );
-        return;
-    }
-
-    // Card-next tap → open map for first departure
-    const next = e.target.closest('.card-next[data-site-id]');
-    if (next) {
-        openMap(
-            parseInt(next.dataset.siteId),
-            next.dataset.stationName,
-            next.dataset.lineNum,
-            next.dataset.destination,
-            next.dataset.expectedIso
-        );
-        e.stopPropagation();
+    // Line group header tap → expand / collapse its logical-line tracker
+    const lineHeader = e.target.closest('.line-group-header');
+    if (lineHeader) {
+        toggleLineGroup(lineHeader.closest('.line-group'));
         return;
     }
 
@@ -590,11 +421,6 @@ document.getElementById('board').addEventListener('click', e => {
     if (devHeader) {
         devHeader.closest('.deviations-container').classList.toggle('expanded');
     }
-});
-
-// Close map when tapping outside the modal content
-document.getElementById('map-modal').addEventListener('click', e => {
-    if (e.target === document.getElementById('map-modal')) closeMap();
 });
 
 // ── Connection events ──────────────────────────────────────────────────────────

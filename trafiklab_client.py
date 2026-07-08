@@ -10,11 +10,11 @@ import csv
 import io
 import json
 import logging
+import math
 import os
 import sqlite3
 import threading
 import zipfile
-from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -54,7 +54,6 @@ _static_cache = {
     'stops_by_name': {},      # normalized name -> [stop_id, ...]
     'routes_by_short_name': {},  # line designation -> [route_id, ...]
     'trips_by_id': {},        # trip_id -> {route_id, trip_headsign, shape_id}
-    'shapes_by_id': {},       # shape_id -> [[lat, lon], ...] ordered by shape_pt_sequence
     'fetched_at': None,
 }
 _static_lock = threading.Lock()
@@ -72,8 +71,8 @@ _STATIC_CACHE_FILE = os.path.join(_CACHE_DIR, '.trafiklab_static_cache.json')
 # stop_times.txt is far too large to parse into an in-memory dict like the other
 # static GTFS tables (SL's regional feed's stop_times.txt dwarfs stops/trips/shapes
 # combined, which already produce a 100+ MB JSON cache) — it's streamed into this
-# small on-disk SQLite index instead, keyed by trip_id, so per-vehicle ETA lookups
-# are fast indexed queries rather than a multi-GB in-memory structure.
+# small on-disk SQLite index instead, keyed by trip_id, so per-trip stop-sequence
+# lookups are fast indexed queries rather than a multi-GB in-memory structure.
 _STOP_TIMES_DB_FILE = os.path.join(_CACHE_DIR, '.trafiklab_stop_times.sqlite')
 _STOCKHOLM_TZ = ZoneInfo('Europe/Stockholm')
 
@@ -92,8 +91,6 @@ def _load_disk_cache() -> bool:
         _static_cache['stops_by_name'] = saved['stops_by_name']
         _static_cache['routes_by_short_name'] = saved['routes_by_short_name']
         _static_cache['trips_by_id'] = saved['trips_by_id']
-        # .get() with a default: caches persisted before shapes.txt support was added won't have this key.
-        _static_cache['shapes_by_id'] = saved.get('shapes_by_id', {})
         _static_cache['fetched_at'] = datetime.fromisoformat(saved['fetched_at'])
         return True
     except Exception:
@@ -109,7 +106,6 @@ def _save_disk_cache() -> None:
                 'stops_by_name': _static_cache['stops_by_name'],
                 'routes_by_short_name': _static_cache['routes_by_short_name'],
                 'trips_by_id': _static_cache['trips_by_id'],
-                'shapes_by_id': _static_cache['shapes_by_id'],
                 'fetched_at': _static_cache['fetched_at'].isoformat(),
             }, f)
     except Exception as e:
@@ -373,39 +369,18 @@ def _ensure_static_data(settings: dict) -> bool:
                         trips_by_id[trip_id] = {
                             'route_id': row.get('route_id'),
                             'trip_headsign': row.get('trip_headsign') or '',
-                            'shape_id': row.get('shape_id') or None,
                         }
-
-                # shapes.txt is an optional GTFS file — some feeds omit it entirely.
-                shapes_by_id = {}
-                if 'shapes.txt' in zf.namelist():
-                    with zf.open('shapes.txt') as f:
-                        reader = csv.DictReader(io.TextIOWrapper(f, encoding='utf-8-sig'))
-                        raw_points = {}  # shape_id -> [(seq, lat, lon), ...]
-                        for row in reader:
-                            shape_id = row.get('shape_id')
-                            lat, lon = row.get('shape_pt_lat'), row.get('shape_pt_lon')
-                            seq = row.get('shape_pt_sequence')
-                            if not shape_id or not lat or not lon:
-                                continue
-                            raw_points.setdefault(shape_id, []).append(
-                                (int(seq) if seq else 0, float(lat), float(lon))
-                            )
-                        for shape_id, pts in raw_points.items():
-                            pts.sort(key=lambda p: p[0])  # shape_pt_sequence order, not file order
-                            shapes_by_id[shape_id] = [[lat, lon] for _, lat, lon in pts]
 
             _static_cache['stops_by_id'] = stops_by_id
             _static_cache['stops_by_parent'] = stops_by_parent
             _static_cache['stops_by_name'] = stops_by_name
             _static_cache['routes_by_short_name'] = routes_by_short_name
             _static_cache['trips_by_id'] = trips_by_id
-            _static_cache['shapes_by_id'] = shapes_by_id
             _static_cache['fetched_at'] = datetime.now()
             _save_disk_cache()
             logger.info(
-                "Loaded Trafiklab static GTFS: %d stops, %d routes, %d trips, %d shapes",
-                len(stops_by_id), len(routes_by_short_name), len(trips_by_id), len(shapes_by_id)
+                "Loaded Trafiklab static GTFS: %d stops, %d routes, %d trips",
+                len(stops_by_id), len(routes_by_short_name), len(trips_by_id)
             )
             if not _stop_times_db_ready():
                 # Reuse the zip bytes we already have in hand — avoids a second,
@@ -423,40 +398,12 @@ def _ensure_static_data(settings: dict) -> bool:
             return _load_disk_cache()
 
 
-def get_station_coords(site_id, settings: dict, name_hint: Optional[str] = None) -> Optional[dict]:
-    """Look up a station's coordinates from GTFS static data. Best-effort, returns None if not found."""
-    if not _ensure_static_data(settings):
-        return None
-
-    site_id_str = str(site_id)
-    stops_by_id = _static_cache['stops_by_id']
-
-    if site_id_str in stops_by_id:
-        entry = stops_by_id[site_id_str]
-        return {'lat': entry['lat'], 'lon': entry['lon'], 'name': entry['name'], 'source': 'gtfs-static'}
-
-    # Site ID might be a parent station with only child platform stops in stops.txt.
-    child_ids = _static_cache['stops_by_parent'].get(site_id_str)
-    if child_ids:
-        entry = stops_by_id[child_ids[0]]
-        return {'lat': entry['lat'], 'lon': entry['lon'], 'name': entry['name'], 'source': 'gtfs-static'}
-
-    if name_hint:
-        candidates = _static_cache['stops_by_name'].get(_normalize_name(name_hint))
-        if candidates:
-            entry = stops_by_id[candidates[0]]
-            return {'lat': entry['lat'], 'lon': entry['lon'], 'name': entry['name'], 'source': 'gtfs-static'}
-
-    return None
-
-
 def _site_stop_ids(site_id, name_hint: Optional[str] = None) -> set:
     """All GTFS stop_ids (platforms + itself) belonging to a site/station.
 
-    SL's site_id and GTFS stop_id are frequently unrelated numbering schemes
-    (same caveat as get_station_coords) — a direct ID match often finds
-    nothing at all, so when a name_hint is available it's used the same way
-    get_station_coords does, matching by normalized stop name instead.
+    SL's site_id and GTFS stop_id are frequently unrelated numbering schemes —
+    a direct ID match often finds nothing at all, so when a name_hint is
+    available it's used to match by normalized stop name instead.
     """
     site_id_str = str(site_id)
     ids = set(_static_cache['stops_by_parent'].get(site_id_str, []))
@@ -466,115 +413,6 @@ def _site_stop_ids(site_id, name_hint: Optional[str] = None) -> set:
             ids.add(stop_id)
             ids.update(_static_cache['stops_by_parent'].get(stop_id, []))
     return ids
-
-
-def _lookup_stop_times(trip_id: str, stop_ids: set) -> list:
-    """Static stop_times rows for this trip at any of the given stop_ids.
-
-    Can return more than one row for loop routes that revisit the same stop
-    within a single trip. Always fails open — [] if the index isn't built yet,
-    the trip/stop isn't found, or anything else goes wrong.
-    """
-    if not trip_id or not stop_ids or not _stop_times_db_ready():
-        return []
-    try:
-        conn = sqlite3.connect(f'file:{_STOP_TIMES_DB_FILE}?mode=ro', uri=True, timeout=2)
-        try:
-            placeholders = ','.join('?' * len(stop_ids))
-            rows = conn.execute(
-                f'SELECT stop_id, arrival_seconds, departure_seconds FROM stop_times '
-                f'WHERE trip_id = ? AND stop_id IN ({placeholders})',
-                (trip_id, *stop_ids),
-            ).fetchall()
-            return [
-                {'stop_id': r[0], 'arrival_seconds': r[1], 'departure_seconds': r[2]}
-                for r in rows
-            ]
-        finally:
-            conn.close()
-    except sqlite3.Error as e:
-        logger.warning(f"stop_times lookup failed for trip {trip_id}: {e}")
-        return []
-
-
-def _lookup_trip_headsign(trip_id: str) -> Optional[str]:
-    """A representative destination string for this trip, sourced from
-    stop_times.txt's stop_headsign column.
-
-    trips.txt's own trip_headsign is unreliable on SL's feed (empty for every
-    trip at time of writing), whereas stop_headsign — the text shown on the
-    vehicle's own destination sign — is populated for essentially every row
-    and is consistent across a trip's stops, so any one non-empty row will do.
-    Always fails open — None if the index isn't built yet or nothing is found.
-    """
-    if not trip_id or not _stop_times_db_ready():
-        return None
-    try:
-        conn = sqlite3.connect(f'file:{_STOP_TIMES_DB_FILE}?mode=ro', uri=True, timeout=2)
-        try:
-            row = conn.execute(
-                "SELECT stop_headsign FROM stop_times "
-                "WHERE trip_id = ? AND stop_headsign IS NOT NULL LIMIT 1",
-                (trip_id,),
-            ).fetchone()
-            return row[0] if row else None
-        finally:
-            conn.close()
-    except sqlite3.Error as e:
-        logger.warning(f"stop_headsign lookup failed for trip {trip_id}: {e}")
-        return None
-
-
-def _lookup_trip_headsigns(trip_ids) -> dict:
-    """Representative destination string per trip_id (see _lookup_trip_headsign for
-    why stop_headsign rather than trip_headsign), for callers that need headsigns
-    for many trips at once — e.g. route shape selection, which considers every
-    trip on a route rather than one trip at a time. A single query per chunk
-    instead of one round-trip per trip. Always fails open — {} on any problem.
-    """
-    trip_ids = [t for t in trip_ids if t]
-    if not trip_ids or not _stop_times_db_ready():
-        return {}
-    try:
-        conn = sqlite3.connect(f'file:{_STOP_TIMES_DB_FILE}?mode=ro', uri=True, timeout=2)
-        try:
-            result = {}
-            # Chunk to stay under SQLite's default host-parameter limit (~999).
-            for i in range(0, len(trip_ids), 500):
-                chunk = trip_ids[i:i + 500]
-                placeholders = ','.join('?' * len(chunk))
-                rows = conn.execute(
-                    f'SELECT trip_id, stop_headsign FROM stop_times '
-                    f'WHERE trip_id IN ({placeholders}) AND stop_headsign IS NOT NULL',
-                    chunk,
-                ).fetchall()
-                for tid, headsign in rows:
-                    result.setdefault(tid, headsign)
-            return result
-        finally:
-            conn.close()
-    except sqlite3.Error as e:
-        logger.warning(f"bulk stop_headsign lookup failed: {e}")
-        return {}
-
-
-def _gtfs_seconds_to_utc_nearest(seconds: int, now_utc: datetime) -> datetime:
-    """Convert GTFS 'seconds since midnight' (local Stockholm time, can exceed
-    24:00:00 for post-midnight trips) to an absolute UTC datetime.
-
-    The seconds value alone doesn't say which service day it belongs to, so
-    this picks whichever of {yesterday, today, tomorrow}'s local midnight
-    produces a result closest to now — correct for ETAs, which are only ever
-    computed for vehicles that are currently live (so the true service time
-    is necessarily near "now"), without needing calendar.txt service-day matching.
-    """
-    now_local = now_utc.astimezone(_STOCKHOLM_TZ)
-    candidates = []
-    for day_offset in (-1, 0, 1):
-        d = now_local.date() + timedelta(days=day_offset)
-        local_midnight = datetime(d.year, d.month, d.day, tzinfo=_STOCKHOLM_TZ)
-        candidates.append((local_midnight + timedelta(seconds=seconds)).astimezone(timezone.utc))
-    return min(candidates, key=lambda dt: abs((dt - now_utc).total_seconds()))
 
 
 # ── Realtime GTFS-RT feeds (short TTL cache) ────────────────────────────────
@@ -712,177 +550,32 @@ def _resolve_route_id(entity_route_id, trip_id, trips_by_id) -> Optional[str]:
     return None
 
 
-def _compute_vehicle_eta(trip_id: Optional[str], site_stop_ids: set, trip_updates_by_id: dict) -> Optional[str]:
-    """Scheduled arrival time of this trip at the given stop, adjusted by any known
-    real-time delay (vehicles are assumed to never depart early — negative delay
-    is clamped to 0). Returns an ISO datetime string, or None if the trip doesn't
-    serve this stop, or has already passed every occurrence of it (loop routes can
-    revisit the same stop more than once in a single trip — the soonest future
-    occurrence wins). Always fails open.
-    """
-    if not trip_id:
-        return None
-    rows = _lookup_stop_times(trip_id, site_stop_ids)
-    if not rows:
-        return None
-
-    now_utc = datetime.now(timezone.utc)
-    tu = trip_updates_by_id.get(trip_id)
-
-    future_etas = []
-    for row in rows:
-        scheduled_seconds = row['arrival_seconds'] if row['arrival_seconds'] is not None else row['departure_seconds']
-        if scheduled_seconds is None:
-            continue
-        scheduled_dt = _gtfs_seconds_to_utc_nearest(scheduled_seconds, now_utc)
-
-        delay_seconds = 0
-        if tu:
-            for stu in tu['stop_time_updates']:
-                if stu['stop_id'] not in site_stop_ids:
-                    continue
-                if stu['arrival_delay'] is not None:
-                    delay_seconds = stu['arrival_delay']
-                elif stu['departure_delay'] is not None:
-                    delay_seconds = stu['departure_delay']
-                elif stu['arrival_time'] is not None:
-                    delay_seconds = (datetime.fromtimestamp(stu['arrival_time'], tz=timezone.utc) - scheduled_dt).total_seconds()
-                elif stu['departure_time'] is not None:
-                    delay_seconds = (datetime.fromtimestamp(stu['departure_time'], tz=timezone.utc) - scheduled_dt).total_seconds()
-                break
-
-        eta_dt = scheduled_dt + timedelta(seconds=max(0, delay_seconds))
-        if eta_dt > now_utc:
-            future_etas.append(eta_dt)
-
-    if not future_etas:
-        return None
-    return min(future_etas).isoformat()
-
-
-def get_vehicle_positions(line: str, destination: Optional[str], settings: dict, site_id=None, station_name: Optional[str] = None) -> list:
-    """Live vehicle positions currently in service on the given line/direction.
-
-    When site_id is given, each vehicle is also enriched with 'eta_iso' — the
-    scheduled+delay-adjusted time it's due at that stop, or None if its trip
-    doesn't serve that stop or has already passed it. station_name helps
-    resolve site_id to real GTFS stop_ids when the two numbering schemes
-    don't match directly (see _site_stop_ids).
-    """
-    if not _ensure_static_data(settings):
-        return []
-
-    route_ids = set(_static_cache['routes_by_short_name'].get(str(line), []))
-    if not route_ids:
-        return []
-
-    trips_by_id = _static_cache['trips_by_id']
-    dest_lower = (destination or '').lower()
-
-    site_stop_ids = _site_stop_ids(site_id, name_hint=station_name) if site_id else set()
-    trip_updates_by_id = {}
-    if site_stop_ids:
-        trip_updates_by_id = {
-            tu['trip_id']: tu for tu in _get_realtime_feed('TripUpdates', settings) if tu['trip_id']
-        }
-
-    results = []
-    for vp in _get_realtime_feed('VehiclePositions', settings):
-        resolved_route_id = _resolve_route_id(vp['route_id'], vp['trip_id'], trips_by_id)
-        if resolved_route_id not in route_ids:
-            continue
-        # trips.txt's trip_headsign is unreliable on SL's feed (frequently empty) —
-        # stop_times.txt's stop_headsign (the vehicle's own destination sign text) is
-        # the reliable source; only fall back to trip_headsign if that's unavailable.
-        headsign = trips_by_id.get(vp['trip_id'], {}).get('trip_headsign', '') or _lookup_trip_headsign(vp['trip_id']) or ''
-        # Tag direction rather than dropping mismatches — the map wants to show
-        # opposite-direction vehicles too (colored differently), not hide them.
-        same_direction = None
-        if dest_lower and headsign:
-            same_direction = dest_lower in headsign.lower()
-
-        eta_iso = None
-        if site_stop_ids:
-            try:
-                eta_iso = _compute_vehicle_eta(vp['trip_id'], site_stop_ids, trip_updates_by_id)
-            except Exception as e:
-                logger.warning(f"ETA computation failed for trip {vp['trip_id']}: {e}")
-
-        results.append({
-            'lat': vp['lat'],
-            'lon': vp['lon'],
-            'vehicle_id': vp['vehicle_id'],
-            'updated_at': vp['timestamp'],
-            'destination': headsign or None,
-            'same_direction': same_direction,
-            'eta_iso': eta_iso,
-        })
-    return results
-
-
-def get_route_shape(line: str, destination: Optional[str], settings: dict) -> list:
-    """Ordered [[lat, lon], ...] points for the line/direction's route path, for drawing on the map.
-
-    A route can have multiple trip patterns (branches, short-turns) each with their own
-    shape_id, so this picks the most common shape_id among matching trips as the
-    representative path rather than the first one found — avoids landing on an atypical
-    short-turn/depot trip. Best-effort — returns [] if no route/shape data is available.
-    """
-    if not _ensure_static_data(settings):
-        return []
-
-    route_ids = set(_static_cache['routes_by_short_name'].get(str(line), []))
-    if not route_ids:
-        return []
-
-    trips_by_id = _static_cache['trips_by_id']
-    dest_lower = (destination or '').lower()
-
-    candidate_trip_ids = [
-        tid for tid, trip in trips_by_id.items()
-        if trip.get('route_id') in route_ids and trip.get('shape_id')
-    ]
-    # trips.txt's trip_headsign is unreliable on SL's feed (frequently empty, same
-    # issue as get_vehicle_positions) — fall back to stop_times.txt's stop_headsign,
-    # bulk-fetched once for every candidate trip rather than one query per trip.
-    fallback_headsigns = _lookup_trip_headsigns(candidate_trip_ids) if dest_lower else {}
-
-    def matching_shape_ids(require_destination_match):
-        counts = Counter()
-        for tid in candidate_trip_ids:
-            trip = trips_by_id[tid]
-            if require_destination_match and dest_lower:
-                headsign = (trip.get('trip_headsign') or fallback_headsigns.get(tid) or '').lower()
-                if not headsign or dest_lower not in headsign:
-                    continue
-            counts[trip['shape_id']] += 1
-        return counts
-
-    counts = matching_shape_ids(require_destination_match=True)
-    if not counts:
-        counts = matching_shape_ids(require_destination_match=False)
-    if not counts:
-        return []
-
-    best_shape_id, _ = counts.most_common(1)[0]
-    return _static_cache['shapes_by_id'].get(best_shape_id, [])
-
-
-def get_trip_delay_info(site_id, line: str, destination: Optional[str], scheduled_iso: str, settings: dict) -> Optional[dict]:
+def get_trip_delay_info(site_id, line: str, destination: Optional[str], scheduled_iso: str, settings: dict, name_hint: Optional[str] = None) -> Optional[dict]:
     """Best-effort GTFS-RT delay for the SL departure identified by (site, line, destination, scheduled time).
+
+    name_hint (the station's display name) matters here — SL's site_id and GTFS
+    stop_id are frequently unrelated numbering schemes (see _site_stop_ids), so
+    without it this often resolves to an empty stop set and silently matches
+    nothing.
 
     Returns None on no confident match — callers must treat that as "skip enrichment," not an error.
     """
     if not _ensure_static_data(settings) or not scheduled_iso:
         return None
 
-    site_stop_ids = _site_stop_ids(site_id)
+    site_stop_ids = _site_stop_ids(site_id, name_hint=name_hint)
     route_ids = set(_static_cache['routes_by_short_name'].get(str(line), []))
     if not route_ids:
         return None
 
     try:
         scheduled_dt = datetime.fromisoformat(scheduled_iso.replace('Z', '+00:00'))
+        # SL's own API returns naive local (Europe/Stockholm) wall-clock time here —
+        # unlike GTFS-RT's tz-aware UTC timestamps below, it carries no offset at
+        # all, so it must be localized before the two can be compared/subtracted.
+        if scheduled_dt.tzinfo is None:
+            scheduled_dt = scheduled_dt.replace(tzinfo=_STOCKHOLM_TZ)
+        scheduled_dt = scheduled_dt.astimezone(timezone.utc)
     except (ValueError, AttributeError):
         return None
 
@@ -922,6 +615,176 @@ def get_trip_delay_info(site_id, line: str, destination: Optional[str], schedule
                 }
 
     return best
+
+
+# ── Logical-line progress (inline vehicle tracker) ──────────────────────────
+
+_PROGRESS_CONFIDENCE_THRESHOLD_M = 1500  # beyond this, a vehicle's GPS projection is untrustworthy
+
+
+def _haversine_m(lat1, lon1, lat2, lon2) -> float:
+    """Great-circle distance between two points, in meters."""
+    R = 6371000.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+def _to_local_xy(lat, lon, ref_lat) -> tuple:
+    """Cheap equirectangular projection to local meters, accurate enough over the
+    few-stop windows this is used for (a handful of km at most)."""
+    R = 6371000.0
+    x = math.radians(lon) * R * math.cos(math.radians(ref_lat))
+    y = math.radians(lat) * R
+    return x, y
+
+
+def get_trip_stop_chain(trip_id: str, site_id, before: int = 3, name_hint: Optional[str] = None) -> Optional[dict]:
+    """The last `before` stops leading up to (and including) site_id's stop on this
+    trip, ordered furthest-upstream-first, each tagged with cumulative haversine
+    distance from the first stop in the window ('dist_from_start').
+
+    name_hint (the station's display name) matters — see _site_stop_ids — without
+    it, site_id frequently resolves to no real GTFS stop_ids at all.
+
+    Returns None if the trip/stop can't be resolved (index not built yet, trip
+    doesn't serve this stop, fewer than 2 usable stops in the window, etc.) —
+    always fails open.
+    """
+    if not trip_id or not _stop_times_db_ready():
+        return None
+    site_stop_ids = _site_stop_ids(site_id, name_hint=name_hint)
+    if not site_stop_ids:
+        return None
+
+    try:
+        conn = sqlite3.connect(f'file:{_STOP_TIMES_DB_FILE}?mode=ro', uri=True, timeout=2)
+        try:
+            rows = conn.execute(
+                'SELECT stop_id, stop_sequence FROM stop_times WHERE trip_id = ? ORDER BY stop_sequence',
+                (trip_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        logger.warning(f"stop chain lookup failed for trip {trip_id}: {e}")
+        return None
+
+    if not rows:
+        return None
+
+    target_idx = next((i for i, (stop_id, _seq) in enumerate(rows) if stop_id in site_stop_ids), None)
+    if target_idx is None:
+        return None
+
+    window = rows[max(0, target_idx - before):target_idx + 1]
+    stops_by_id = _static_cache['stops_by_id']
+    chain = []
+    for stop_id, _seq in window:
+        entry = stops_by_id.get(stop_id)
+        if not entry:
+            continue
+        chain.append({'name': entry['name'], 'lat': entry['lat'], 'lon': entry['lon']})
+
+    if len(chain) < 2:
+        return None
+
+    dist = 0.0
+    chain[0]['dist_from_start'] = 0.0
+    for i in range(1, len(chain)):
+        dist += _haversine_m(chain[i - 1]['lat'], chain[i - 1]['lon'], chain[i]['lat'], chain[i]['lon'])
+        chain[i]['dist_from_start'] = dist
+
+    return {'stops': chain, 'total_dist': dist}
+
+
+def get_vehicle_position_for_trip(trip_id: str, settings: dict) -> Optional[dict]:
+    """The live VehiclePositions entry for this exact trip_id, or None."""
+    if not trip_id:
+        return None
+    for vp in _get_realtime_feed('VehiclePositions', settings):
+        if vp['trip_id'] == trip_id:
+            return vp
+    return None
+
+
+def _project_onto_chain(lat: float, lon: float, stops: list) -> Optional[dict]:
+    """Nearest-segment projection of a lat/lon onto the polyline formed by `stops`.
+
+    Returns the along-chain distance ('dist_from_start') of the closest point on
+    the polyline, plus the perpendicular distance from it ('perp_dist', meters) —
+    callers should treat a large perp_dist as "this vehicle isn't really on this
+    stretch of track" rather than trusting the projection.
+    """
+    if len(stops) < 2:
+        return None
+
+    ref_lat = stops[0]['lat']
+    vx, vy = _to_local_xy(lat, lon, ref_lat)
+
+    best = None
+    for i in range(len(stops) - 1):
+        ax, ay = _to_local_xy(stops[i]['lat'], stops[i]['lon'], ref_lat)
+        bx, by = _to_local_xy(stops[i + 1]['lat'], stops[i + 1]['lon'], ref_lat)
+        dx, dy = bx - ax, by - ay
+        seg_len_sq = dx * dx + dy * dy
+        t = 0.0 if seg_len_sq == 0 else max(0.0, min(1.0, ((vx - ax) * dx + (vy - ay) * dy) / seg_len_sq))
+        proj_x, proj_y = ax + t * dx, ay + t * dy
+        perp_dist = math.hypot(vx - proj_x, vy - proj_y)
+        if best is None or perp_dist < best['perp_dist']:
+            seg_dist = stops[i]['dist_from_start'] + t * (stops[i + 1]['dist_from_start'] - stops[i]['dist_from_start'])
+            best = {'perp_dist': perp_dist, 'dist_from_start': seg_dist}
+
+    return best
+
+
+def get_line_progress(line: str, destination: Optional[str], site_id, trip_ids: list, settings: dict, before: int = 3, name_hint: Optional[str] = None) -> dict:
+    """Stop chain + live vehicle progress for a group of trips on the same line/destination.
+
+    The soonest trip_id (callers should pass them in departure-time order) that
+    resolves a stop chain becomes the shared track; every trip_id is then
+    independently matched to its own vehicle and projected onto that track, so
+    several upcoming vehicles for the same line/direction can be plotted
+    together. `progress` is 0 at the furthest-upstream stop in the window and 1
+    at the target station. Always fails open — {'stops': [], 'vehicles': []}
+    if nothing can be resolved.
+    """
+    if not _ensure_static_data(settings):
+        return {'stops': [], 'vehicles': []}
+
+    chain = None
+    for tid in trip_ids:
+        chain = get_trip_stop_chain(tid, site_id, before=before, name_hint=name_hint)
+        if chain:
+            break
+
+    if not chain:
+        return {'stops': [], 'vehicles': []}
+
+    stops = chain['stops']
+    total_dist = chain['total_dist']
+
+    vehicles = []
+    for tid in trip_ids:
+        vp = get_vehicle_position_for_trip(tid, settings)
+        if not vp:
+            continue
+        proj = _project_onto_chain(vp['lat'], vp['lon'], stops)
+        if not proj or proj['perp_dist'] > _PROGRESS_CONFIDENCE_THRESHOLD_M:
+            continue
+        progress = (proj['dist_from_start'] / total_dist) if total_dist > 0 else 0.0
+        vehicles.append({
+            'trip_id': tid,
+            'progress': max(0.0, min(1.0, progress)),
+            'updated_at': vp['timestamp'],
+        })
+
+    return {
+        'stops': [{'name': s['name'], 'dist_from_start': s['dist_from_start']} for s in stops],
+        'vehicles': vehicles,
+    }
 
 
 def get_active_alerts_for_route(line: str, settings: dict) -> list:
