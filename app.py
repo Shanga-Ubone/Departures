@@ -7,6 +7,7 @@ import os
 import logging
 from dataclasses import dataclass
 from typing import Optional, List
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Must run before importing trafiklab_client — it reads its API keys from the
@@ -219,14 +220,27 @@ def get_departures(site_id: int, filters: list) -> SiteResult:
         _try_cache_location(site_id, raw_departures, site_name)
 
         filtered = []
+        live_by_line = defaultdict(set)
         for dep in raw_departures:
             line_info = dep.get('line', {})
             line_num = line_info.get('designation') if isinstance(line_info, dict) else dep.get('line_designation')
             destination = dep.get('destination', 'Unknown')
+            live_by_line[str(line_num)].add(destination)
             if matches_filter(line_num, destination, filters):
                 enriched = enrich_departure(dep, line_num, filters)
                 if enriched:
                     filtered.append(enriched)
+
+        # A configured line that's currently running but never with the configured
+        # destination text usually means SL's live terminus/short-turn pattern has
+        # drifted from what's in config.json — surface it instead of the route
+        # silently disappearing from the board (see app.py matches_filter()).
+        for f in filters:
+            if f.line in live_by_line and not any(f.dest in (d or '').lower() for d in live_by_line[f.line]):
+                logger.warning(
+                    f"Site {site_id}: configured line {f.line} dest '{f.dest}' matched nothing; "
+                    f"live destinations for line {f.line}: {sorted(live_by_line[f.line])}"
+                )
 
         filtered.sort(key=lambda x: x.get('expected') or x.get('scheduled'))
         return SiteResult(site_name=site_name, departures=filtered, stop_deviations=stop_deviations)

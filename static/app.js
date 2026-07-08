@@ -218,14 +218,17 @@ async function updateBoard() {
                 devContainer.className = 'deviations-container';
                 const devHeader = document.createElement('div');
                 devHeader.className = 'deviation-header';
-                devHeader.textContent = '⚠ Service Alerts';
+                devHeader.innerHTML = `<span>⚠ Service Alerts</span><span class="chevron">▼</span>`;
                 devContainer.appendChild(devHeader);
+                const devList = document.createElement('div');
+                devList.className = 'deviations-list';
                 deviations.forEach(dev => {
                     const devItem = document.createElement('div');
                     devItem.className = `deviation-item ${dev.consequence}`;
                     devItem.textContent = dev.message;
-                    devContainer.appendChild(devItem);
+                    devList.appendChild(devItem);
                 });
+                devContainer.appendChild(devList);
                 board.appendChild(devContainer);
             }
 
@@ -579,6 +582,13 @@ document.getElementById('board').addEventListener('click', e => {
     const card = e.target.closest('.station-card');
     if (card) {
         card.classList.toggle('expanded');
+        return;
+    }
+
+    // Service alerts header tap → expand / collapse
+    const devHeader = e.target.closest('.deviation-header');
+    if (devHeader) {
+        devHeader.closest('.deviations-container').classList.toggle('expanded');
     }
 });
 

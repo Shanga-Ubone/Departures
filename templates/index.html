@@ -152,9 +152,16 @@
             color: #ff6b6b;
             font-weight: bold;
             font-size: 0.85em;
-            margin-bottom: 5px;
             text-transform: uppercase;
+            cursor: pointer;
+            user-select: none;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
         }
+        .deviations-list { display: none; margin-top: 6px; }
+        .deviations-container.expanded .deviations-list { display: block; }
+        .deviations-container.expanded .chevron { transform: rotate(180deg); }
         .deviation-item {
             color: #ffcccc;
             font-size: 0.9em;
